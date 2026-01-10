@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Working WebCAD Parametric Sketcher WORKING",
+  "description": "A high-performance parametric 2D sketcher with a built-in constraint solver, featuring a FreeCAD-inspired UI and Gemini-powered design assistance.",
+  "requestFramePermissions": []
+}
