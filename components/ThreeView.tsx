@@ -142,15 +142,6 @@ const ThreeView: React.FC<ThreeViewProps> = ({
       });
     }
 
-    console.log("fitView bounding box:", {
-      isEmpty: box.isEmpty(),
-      min: box.min,
-      max: box.max,
-      historyChildren: historyGroupRef.current.children.length,
-      meshChildren: meshGroupRef.current.children.length,
-      sketchChildren: sketchVisGroupRef.current?.children.length || 0,
-    });
-
     if (box.isEmpty()) {
       // Fallback for empty scene
       if (currentTransform) {
@@ -198,15 +189,6 @@ const ThreeView: React.FC<ThreeViewProps> = ({
       const newPos = center.clone().add(offset.multiplyScalar(cameraZ));
       cameraRef.current.position.copy(newPos);
     }
-
-    console.log("fitView camera set:", {
-      center,
-      size,
-      maxDim,
-      cameraZ,
-      cameraPosition: cameraRef.current.position,
-      target: controlsRef.current.target,
-    });
 
     cameraRef.current.updateProjectionMatrix();
     controlsRef.current.update();
@@ -272,32 +254,10 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    console.log("ThreeView initialized:", {
-      width,
-      height,
-      canvasAdded: !!renderer.domElement.parentElement,
-      cameraPosition: camera.position,
-      canvasStyle: {
-        width: renderer.domElement.style.width,
-        height: renderer.domElement.style.height,
-        display: renderer.domElement.style.display,
-        position: renderer.domElement.style.position,
-      },
-      canvasSize: {
-        width: renderer.domElement.width,
-        height: renderer.domElement.height,
-      },
-    });
-
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
     controlsRef.current = controls;
-
-    console.log("OrbitControls initialized:", {
-      enabled: controls.enabled,
-      domElement: controls.domElement.tagName,
-    });
 
     // --- Improved Lighting Setup ---
     // 1. Hemisphere Light for natural ambient fill
@@ -761,7 +721,6 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         }
 
         const shapes = getShapesFromSketch(feature.sketch); // Use full sketch for history features
-        console.log("shapes", shapes);
         const geom = generateGeometryForFeature(
           feature.featureType,
           shapes,
@@ -825,15 +784,6 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     if (!sketchVisGroupRef.current) return;
     const group = sketchVisGroupRef.current;
     while (group.children.length > 0) group.remove(group.children[0]);
-
-    console.log("3D Sketch Visualization:", {
-      lines: state.lines.length,
-      circles: state.circles.length,
-      arcs: state.arcs.length,
-      points: state.points.length,
-      currentTransform: currentTransform ? "YES" : "NO",
-      samplePoints: state.points.slice(0, 2).map((p) => ({ x: p.x, y: p.y })),
-    });
 
     if (currentTransform) {
       group.matrix.fromArray(currentTransform);
@@ -942,12 +892,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
       renderArc(a.id, a.center, a.radius, a.p1, a.p2, a.construction)
     );
 
-    console.log("Sketch group children count:", group.children.length);
     if (group.children.length > 0) {
-      console.log("First child:", group.children[0]);
-      console.log("Group visible:", group.visible);
-      console.log("Group matrix:", group.matrix.elements);
-
       // Trigger fitView to frame the sketch
       setTimeout(() => fitView(), 100);
     }
