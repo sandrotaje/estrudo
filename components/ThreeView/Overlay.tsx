@@ -1,0 +1,359 @@
+import React from "react";
+import { Feature, Line } from "../../types";
+
+type ThreeViewOverlayProps = {
+  hasActiveSketch: boolean;
+  isConfigOpen: boolean;
+  selectedSketchElements: string[];
+  featureType: "EXTRUDE" | "REVOLVE";
+  operation: "NEW" | "CUT";
+  throughAll: boolean;
+  localDepth: number;
+  revolveAngle: number;
+  activeAxisId: string | null;
+  lines: Line[];
+  initialFeatureParams?: Feature;
+  errorMsg: string | null;
+  selectedFaceData: unknown | null;
+  onFitView: () => void;
+  onExportSTL: () => void;
+  onSetFeatureType: (value: "EXTRUDE" | "REVOLVE") => void;
+  onSetIsConfigOpen: (value: boolean) => void;
+  onSetOperation: (value: "NEW" | "CUT") => void;
+  onSetThroughAll: (value: boolean) => void;
+  onSetLocalDepth: (value: number) => void;
+  onSetRevolveAngle: (value: number) => void;
+  onSetActiveAxisId: (value: string) => void;
+  onCommit: () => void;
+  onEditSketch: () => void;
+  onCreateSketchOnFace: () => void;
+};
+
+const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
+  hasActiveSketch,
+  isConfigOpen,
+  selectedSketchElements,
+  featureType,
+  operation,
+  throughAll,
+  localDepth,
+  revolveAngle,
+  activeAxisId,
+  lines,
+  initialFeatureParams,
+  errorMsg,
+  selectedFaceData,
+  onFitView,
+  onExportSTL,
+  onSetFeatureType,
+  onSetIsConfigOpen,
+  onSetOperation,
+  onSetThroughAll,
+  onSetLocalDepth,
+  onSetRevolveAngle,
+  onSetActiveAxisId,
+  onCommit,
+  onEditSketch,
+  onCreateSketchOnFace,
+}) => {
+  return (
+    <>
+      <div className="absolute top-4 right-4 z-10 flex gap-2">
+        <button
+          onClick={onFitView}
+          className="bg-[#1a1a1a]/90 border border-white/10 text-white px-3 py-2 rounded-xl text-xs font-bold uppercase hover:bg-white/10"
+          title="Recenter View"
+        >
+          ⛶
+        </button>
+        <button
+          onClick={onExportSTL}
+          className="bg-[#1a1a1a]/90 border border-white/10 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-white/10 flex items-center gap-2"
+        >
+          <span className="text-lg">⬇</span> Export STL
+        </button>
+      </div>
+
+      {/* Main Action Bar (When no config open) */}
+      {!isConfigOpen && hasActiveSketch && (
+        <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 animate-in fade-in">
+          {/* Operations Menu */}
+          <div className="flex flex-col gap-1 mt-2">
+            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest px-2">
+              Operations
+            </span>
+            <button
+              onClick={() => {
+                onSetFeatureType("EXTRUDE");
+                onSetIsConfigOpen(true);
+              }}
+              className="flex items-center gap-3 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg transition-all text-left"
+            >
+              <span className="text-xl">⬆</span>
+              <div className="flex flex-col">
+                <span className="text-xs font-bold uppercase">Extrude</span>
+                <span className="text-[9px] opacity-80">
+                  {selectedSketchElements.length > 0
+                    ? `${selectedSketchElements.length} selected items`
+                    : "Pull entire sketch"}
+                </span>
+              </div>
+            </button>
+            <button
+              onClick={() => {
+                onSetFeatureType("REVOLVE");
+                onSetIsConfigOpen(true);
+              }}
+              className="flex items-center gap-3 px-4 py-3 bg-orange-600 hover:bg-orange-500 text-white rounded-xl shadow-lg transition-all text-left"
+            >
+              <span className="text-xl">↻</span>
+              <div className="flex flex-col">
+                <span className="text-xs font-bold uppercase">Revolve</span>
+                <span className="text-[9px] opacity-80">
+                  {selectedSketchElements.length > 0
+                    ? `${selectedSketchElements.length} selected items`
+                    : "Spin entire sketch"}
+                </span>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Config Panel (Extrude/Revolve) */}
+      {isConfigOpen && (
+        <div
+          className="absolute top-4 left-4 z-10 bg-[#1a1a1a]/95 backdrop-blur-xl p-5 rounded-2xl border border-white/10 shadow-2xl w-72 flex flex-col gap-4 animate-in slide-in-from-left-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-white/5 pb-3">
+            <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+              <span className="text-lg">⚙️</span>{" "}
+              {initialFeatureParams ? "Edit Feature" : "Feature Properties"}
+            </h3>
+          </div>
+
+          {/* Feature Type Toggle */}
+          <div className="flex bg-[#000] p-1 rounded-lg mb-2">
+            <button
+              onClick={() => onSetFeatureType("EXTRUDE")}
+              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                featureType === "EXTRUDE"
+                  ? "bg-purple-600 text-white"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              Extrude
+            </button>
+            <button
+              onClick={() => onSetFeatureType("REVOLVE")}
+              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                featureType === "REVOLVE"
+                  ? "bg-orange-600 text-white"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              Revolve
+            </button>
+          </div>
+
+          {/* Operation Toggle */}
+          <div className="flex bg-[#000] p-1 rounded-lg">
+            <button
+              onClick={() => onSetOperation("NEW")}
+              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                operation === "NEW"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              New
+            </button>
+            <button
+              onClick={() => onSetOperation("CUT")}
+              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                operation === "CUT"
+                  ? "bg-red-600 text-white"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              Cut
+            </button>
+          </div>
+
+          {featureType === "EXTRUDE" && (
+            <>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="throughAll"
+                  checked={throughAll}
+                  onChange={(e) => onSetThroughAll(e.target.checked)}
+                  className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500"
+                />
+                <label
+                  htmlFor="throughAll"
+                  className="text-xs text-gray-300 font-medium select-none"
+                >
+                  Through All
+                </label>
+              </div>
+              <div
+                className={`space-y-2 transition-opacity ${
+                  throughAll ? "opacity-40 pointer-events-none" : "opacity-100"
+                }`}
+              >
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  Depth (mm)
+                </label>
+                <div className="flex items-center gap-3">
+                  <div className="relative flex-1">
+                    <input
+                      type="number"
+                      min="1"
+                      max="1000"
+                      value={localDepth}
+                      onChange={(e) =>
+                        onSetLocalDepth(parseFloat(e.target.value))
+                      }
+                      className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-sm font-mono text-blue-400 focus:outline-none focus:border-blue-500"
+                    />
+                    <span className="absolute right-3 top-2 text-xs text-gray-600 pointer-events-none">
+                      mm
+                    </span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="500"
+                  value={localDepth}
+                  onChange={(e) => onSetLocalDepth(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+            </>
+          )}
+
+          {featureType === "REVOLVE" && (
+            <>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  Angle (Deg)
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min="1"
+                    max="360"
+                    value={revolveAngle}
+                    onChange={(e) =>
+                      onSetRevolveAngle(parseFloat(e.target.value))
+                    }
+                    className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-sm font-mono text-orange-400 focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="360"
+                  value={revolveAngle}
+                  onChange={(e) =>
+                    onSetRevolveAngle(parseFloat(e.target.value))
+                  }
+                  className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  Axis Line
+                </label>
+                <select
+                  value={activeAxisId || ""}
+                  onChange={(e) => onSetActiveAxisId(e.target.value)}
+                  className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-xs text-gray-300 focus:outline-none"
+                >
+                  <option value="" disabled>
+                    Select Axis...
+                  </option>
+                  {lines.map((l, i) => (
+                    <option key={l.id} value={l.id}>
+                      Line {i + 1} {l.construction ? "(Constr)" : ""}{" "}
+                      {l.id === activeAxisId ? "(Selected)" : ""}
+                    </option>
+                  ))}
+                </select>
+                {!activeAxisId && (
+                  <p className="text-[10px] text-red-400">
+                    Please select a line to revolve around.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+
+          {initialFeatureParams && (
+            <div className="pt-2 border-t border-white/5">
+              <button
+                onClick={onEditSketch}
+                className="w-full py-2 mb-2 rounded-lg bg-[#2a2a2a] hover:bg-[#333] border border-white/5 text-xs font-bold text-purple-400 uppercase flex items-center justify-center gap-2"
+              >
+                <span>✎</span> Edit Sketch Geometry
+              </button>
+            </div>
+          )}
+
+          {errorMsg && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+              <p className="text-[10px] text-red-400 font-bold">{errorMsg}</p>
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={() => onSetIsConfigOpen(false)}
+              className="flex-1 py-2 rounded-lg bg-[#333] hover:bg-[#444] text-xs font-bold text-gray-300 uppercase"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onCommit}
+              disabled={!!errorMsg}
+              className={`flex-1 py-2 rounded-lg text-xs font-bold text-white uppercase shadow-lg ${
+                errorMsg ? "bg-gray-700" : "bg-blue-600 hover:bg-blue-500"
+              }`}
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {selectedFaceData && !isConfigOpen && (
+        <div
+          className="absolute z-20 bg-black/80 backdrop-blur border border-blue-500/50 text-white p-2 rounded-lg shadow-lg pointer-events-none"
+          style={{
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+          }}
+        >
+          <div className="text-xs font-bold mb-1 text-blue-300 text-center">
+            Face Selected
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCreateSketchOnFace();
+            }}
+            className="pointer-events-auto bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded shadow-lg"
+          >
+            Sketch on Face
+          </button>
+        </div>
+      )}
+    </>
+  );
+};
+
+export default ThreeViewOverlay;

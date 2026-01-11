@@ -6,18 +6,25 @@ import React, {
   useCallback,
 } from "react";
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLExporter } from "three/addons/exporters/STLExporter.js";
-import { Evaluator, Brush, SUBTRACTION, ADDITION } from "three-bvh-csg";
+import type { Brush } from "three-bvh-csg";
+import { SketchState, Feature, Line, Arc, Circle, Point } from "../types";
 import {
-  SketchState,
-  Feature,
-  Line,
-  ConstraintType,
-  Arc,
-  Circle,
-  Point,
-} from "../types";
+  generateGeometryForFeature,
+  getShapesFromSketch,
+} from "./ThreeView/sketchGeometry";
+import {
+  pickFaceData,
+  pickSketchElementId,
+  setRayFromMouseEvent,
+} from "./ThreeView/picking";
+import ThreeViewOverlay from "./ThreeView/Overlay";
+import { useThreeScene } from "./ThreeView/useThreeScene";
+import { useHistoryCSG } from "./ThreeView/useHistoryCSG";
+import { useSketchVisualization } from "./ThreeView/useSketchVisualization";
+import { useAxisVisualization } from "./ThreeView/useAxisVisualization";
+import { usePreviewMesh } from "./ThreeView/usePreviewMesh";
+import { useFaceHighlight } from "./ThreeView/useFaceHighlight";
 
 interface ThreeViewProps {
   state: SketchState;
@@ -53,7 +60,6 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   onUpdateFeatureParams,
   onSketchOnFace,
   onClose,
-  onEditFeature,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
 
@@ -100,7 +106,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
+  const controlsRef = useRef<any>(null);
   const meshGroupRef = useRef<THREE.Group | null>(null);
   const historyGroupRef = useRef<THREE.Group | null>(null);
   const sketchVisGroupRef = useRef<THREE.Group | null>(null);
@@ -219,684 +225,39 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     }
   }, [state, initialFeatureParams, activeAxisId]);
 
-  // 1. Initialize Scene
-  useEffect(() => {
-    if (!mountRef.current) return;
-
-    // Clear any existing canvas elements (prevents duplicates from React StrictMode)
-    while (mountRef.current.firstChild) {
-      mountRef.current.removeChild(mountRef.current.firstChild);
-    }
-
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#121212");
-    sceneRef.current = scene;
-
-    const width = mountRef.current.clientWidth;
-    const height = mountRef.current.clientHeight;
-    const camera = new THREE.PerspectiveCamera(45, width / height, 1, 10000);
-    // Initial position, will be overridden by fitView shortly
-    camera.position.set(200, -300, 300);
-    camera.up.set(0, 0, 1);
-    camera.lookAt(0, 0, 0);
-    cameraRef.current = camera;
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(width, height);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    // Ensure canvas is properly styled and visible
-    renderer.domElement.style.display = "block";
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
-
-    mountRef.current.appendChild(renderer.domElement);
-    rendererRef.current = renderer;
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-    controlsRef.current = controls;
-
-    // --- Improved Lighting Setup ---
-    // 1. Hemisphere Light for natural ambient fill
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
-    hemiLight.position.set(0, 0, 500);
-    scene.add(hemiLight);
-
-    // 2. Main Directional Light (Sun/Key Light)
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2.5);
-    dirLight.position.set(150, -150, 300);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 2048;
-    dirLight.shadow.mapSize.height = 2048;
-    dirLight.shadow.bias = -0.0001;
-    scene.add(dirLight);
-
-    // 3. Fill Light (Softer, from opposite side)
-    const fillLight = new THREE.DirectionalLight(0xeef2ff, 1.2);
-    fillLight.position.set(-150, 150, 100);
-    scene.add(fillLight);
-
-    // Grid
-    const gridHelper = new THREE.GridHelper(2000, 40, 0x444444, 0x222222);
-    gridHelper.rotation.x = Math.PI / 2;
-    scene.add(gridHelper);
-
-    // Groups
-    const historyGroup = new THREE.Group();
-    scene.add(historyGroup);
-    historyGroupRef.current = historyGroup;
-
-    const meshGroup = new THREE.Group();
-    scene.add(meshGroup);
-    meshGroupRef.current = meshGroup;
-
-    const sketchVisGroup = new THREE.Group();
-    scene.add(sketchVisGroup);
-    sketchVisGroupRef.current = sketchVisGroup;
-
-    const highlightGroup = new THREE.Group();
-    scene.add(highlightGroup);
-    highlightGroupRef.current = highlightGroup;
-
-    const axisHelperGroup = new THREE.Group();
-    scene.add(axisHelperGroup);
-    axisHelperGroupRef.current = axisHelperGroup;
-
-    const animate = () => {
-      requestRef.current = requestAnimationFrame(animate);
-      if (controlsRef.current) controlsRef.current.update();
-      if (rendererRef.current && sceneRef.current && cameraRef.current) {
-        rendererRef.current.render(sceneRef.current, cameraRef.current);
-      }
-    };
-    animate();
-
-    const handleResize = () => {
-      if (!mountRef.current || !cameraRef.current || !rendererRef.current)
-        return;
-      const w = mountRef.current.clientWidth;
-      const h = mountRef.current.clientHeight;
-      cameraRef.current.aspect = w / h;
-      cameraRef.current.updateProjectionMatrix();
-      rendererRef.current.setSize(w, h);
-    };
-    window.addEventListener("resize", handleResize);
-
-    // Trigger initial fit (delayed slightly for mesh generation)
-    setTimeout(fitView, 100);
-
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      cancelAnimationFrame(requestRef.current);
-      if (rendererRef.current) {
-        rendererRef.current.dispose();
-        mountRef.current?.removeChild(rendererRef.current.domElement);
-      }
-    };
-  }, [fitView]);
+  useThreeScene({
+    mountRef,
+    fitView,
+    sceneRef,
+    cameraRef,
+    rendererRef,
+    controlsRef,
+    historyGroupRef,
+    meshGroupRef,
+    sketchVisGroupRef,
+    highlightGroupRef,
+    axisHelperGroupRef,
+    requestRef,
+  });
 
   // --- Geometry Helpers ---
-  const isPointInside = (point: THREE.Vector2, polygon: THREE.Vector2[]) => {
-    let inside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const xi = polygon[i].x,
-        yi = polygon[i].y;
-      const xj = polygon[j].x,
-        yj = polygon[j].y;
-      const intersect =
-        yi > point.y !== yj > point.y &&
-        point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
-      if (intersect) inside = !inside;
-    }
-    return inside;
-  };
 
-  const getShapesFromSketch = (
-    sketchState: SketchState,
-    allowedIds?: string[]
-  ) => {
-    // 1. Resolve Coincident Points
-    const parent = new Map<string, string>();
-    const find = (id: string): string => {
-      if (!parent.has(id)) parent.set(id, id);
-      if (parent.get(id) !== id) parent.set(id, find(parent.get(id)!));
-      return parent.get(id)!;
-    };
-    const union = (id1: string, id2: string) => {
-      const root1 = find(id1);
-      const root2 = find(id2);
-      if (root1 !== root2) parent.set(root1, root2);
-    };
-    sketchState.points.forEach((p) => find(p.id));
-    sketchState.constraints
-      .filter(
-        (c) => c.type === ConstraintType.COINCIDENT && c.points.length >= 2
-      )
-      .forEach((c) => {
-        for (let i = 1; i < c.points.length; i++)
-          union(c.points[0], c.points[i]);
-      });
+  useHistoryCSG({
+    features,
+    historyGroupRef,
+    brushCache,
+    activeAxisId,
+    fitView,
+  });
 
-    type Edge = { to: string; isArc: boolean; arcData?: any };
-    const adj = new Map<string, Edge[]>();
-    const getAdj = (id: string) => {
-      if (!adj.has(id)) adj.set(id, []);
-      return adj.get(id)!;
-    };
-
-    // Filter Logic
-    const useFilter = allowedIds && allowedIds.length > 0;
-    const isAllowed = (id: string) => !useFilter || allowedIds.includes(id);
-
-    const axisId = activeAxisId;
-
-    const lines = sketchState.lines.filter(
-      (l) => !l.construction && l.id !== axisId && isAllowed(l.id)
-    );
-    const arcs = (sketchState.arcs || []).filter(
-      (a) => !a.construction && isAllowed(a.id)
-    );
-    const circles = sketchState.circles.filter(
-      (c) => !c.construction && isAllowed(c.id)
-    );
-
-    lines.forEach((l) => {
-      const u = find(l.p1),
-        v = find(l.p2);
-      if (u !== v) {
-        getAdj(u).push({ to: v, isArc: false });
-        getAdj(v).push({ to: u, isArc: false });
-      }
-    });
-    arcs.forEach((a) => {
-      const u = find(a.p1),
-        v = find(a.p2);
-      if (u !== v) {
-        getAdj(u).push({ to: v, isArc: true, arcData: a });
-        getAdj(v).push({ to: u, isArc: true, arcData: a });
-      }
-    });
-
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const [node, neighbors] of adj.entries()) {
-        if (neighbors.length < 2) {
-          for (const neighbor of neighbors) {
-            const nList = adj.get(neighbor.to);
-            if (nList) {
-              const idx = nList.findIndex((e) => e.to === node);
-              if (idx !== -1) nList.splice(idx, 1);
-            }
-          }
-          adj.delete(node);
-          changed = true;
-        }
-      }
-    }
-
-    const visitedGlobal = new Set<string>();
-    const cycles: {
-      edges: { from: string; to: string; isArc: boolean; arcData?: any }[];
-    }[] = [];
-    const getCoords = (canonicalId: string) => {
-      const p =
-        sketchState.points.find((p) => p.id === canonicalId) ||
-        sketchState.points.find((p) => find(p.id) === canonicalId);
-      if (!p || isNaN(p.x) || isNaN(p.y)) return { x: 0, y: 0 };
-      return { x: p.x, y: p.y };
-    };
-
-    for (const startNode of adj.keys()) {
-      if (visitedGlobal.has(startNode)) continue;
-      const path: string[] = [startNode];
-      const edgePath: Edge[] = [];
-      const visitedInPath = new Set([startNode]);
-      let curr = startNode;
-      let prev = "";
-
-      while (true) {
-        const neighbors = adj.get(curr);
-        if (!neighbors) break;
-        let nextEdge: Edge | undefined;
-        for (const edge of neighbors) {
-          if (edge.to !== prev) {
-            if (!visitedInPath.has(edge.to)) {
-              nextEdge = edge;
-              break;
-            }
-            if (path.length > 2 && edge.to === path[0]) {
-              nextEdge = edge;
-              break;
-            }
-          }
-        }
-        if (!nextEdge) {
-          if (
-            neighbors.some((e) => e.to === path[0]) &&
-            path.length > 2 &&
-            prev !== path[0]
-          )
-            nextEdge = neighbors.find((e) => e.to === path[0]);
-          else break;
-        }
-        if (nextEdge) {
-          if (nextEdge.to === path[0]) {
-            edgePath.push(nextEdge);
-            const cycleEdges = [];
-            for (let i = 0; i < path.length; i++)
-              cycleEdges.push({
-                from: path[i],
-                to: edgePath[i].to,
-                isArc: edgePath[i].isArc,
-                arcData: edgePath[i].arcData,
-              });
-            cycles.push({ edges: cycleEdges });
-            path.forEach((id) => visitedGlobal.add(id));
-            break;
-          }
-          if (visitedInPath.has(nextEdge.to)) break;
-          path.push(nextEdge.to);
-          edgePath.push(nextEdge);
-          visitedInPath.add(nextEdge.to);
-          prev = curr;
-          curr = nextEdge.to;
-          if (path.length > 1000) break;
-        } else break;
-      }
-    }
-
-    const shapes: THREE.Shape[] = [];
-
-    cycles.forEach((cycle) => {
-      const s = new THREE.Shape();
-      const first = getCoords(cycle.edges[0].from);
-      s.moveTo(first.x, first.y);
-      cycle.edges.forEach((edge) => {
-        const dest = getCoords(edge.to);
-        if (edge.isArc && edge.arcData) {
-          const arc = edge.arcData;
-          const center = getCoords(find(arc.center));
-          const from2d = getCoords(edge.from);
-          const to2d = getCoords(edge.to);
-          if (isNaN(arc.radius) || arc.radius <= 0) {
-            s.lineTo(dest.x, dest.y);
-          } else {
-            const a1 = Math.atan2(from2d.y - center.y, from2d.x - center.x);
-            const a2 = Math.atan2(to2d.y - center.y, to2d.x - center.x);
-            let diff = a2 - a1;
-            while (diff <= -Math.PI) diff += 2 * Math.PI;
-            while (diff > Math.PI) diff -= 2 * Math.PI;
-            const clockwise = diff < 0;
-            s.absarc(center.x, center.y, arc.radius, a1, a2, clockwise);
-          }
-        } else s.lineTo(dest.x, dest.y);
-      });
-      shapes.push(s);
-    });
-
-    circles.forEach((circle) => {
-      const center = sketchState.points.find((p) => p.id === circle.center);
-      if (center && !isNaN(circle.radius) && circle.radius > 0) {
-        const s = new THREE.Shape();
-        s.absarc(center.x, center.y, circle.radius, 0, Math.PI * 2, false);
-        shapes.push(s);
-      }
-    });
-
-    const shapeData = shapes.map((s) => {
-      const points = s.getPoints();
-      const area = Math.abs(THREE.ShapeUtils.area(points));
-      return {
-        shape: s,
-        points,
-        area: isNaN(area) ? 0 : area,
-        parent: null as any,
-      };
-    });
-    const validShapeData = shapeData.filter((d) => d.area > 0.001);
-    validShapeData.sort((a, b) => b.area - a.area);
-
-    for (let i = 0; i < validShapeData.length; i++) {
-      const current = validShapeData[i];
-      let bestParent = null;
-      for (let j = i - 1; j >= 0; j--) {
-        const potential = validShapeData[j];
-        if (
-          current.points.length > 0 &&
-          isPointInside(current.points[0], potential.points)
-        ) {
-          if (!bestParent || potential.area < bestParent.area)
-            bestParent = potential;
-        }
-      }
-      current.parent = bestParent;
-    }
-    const rootShapes: THREE.Shape[] = [];
-    validShapeData.forEach((item) => {
-      let depth = 0;
-      let p = item.parent;
-      while (p) {
-        depth++;
-        p = p.parent;
-      }
-      if (depth % 2 === 0) rootShapes.push(item.shape);
-      else if (item.parent) item.parent.shape.holes.push(item.shape);
-    });
-
-    return rootShapes;
-  };
-
-  const generateExtrusionGeometry = (shapes: THREE.Shape[], depth: number) => {
-    if (shapes.length === 0) return null;
-    // Performance optimization: Reduced curveSegments from 64 to 32
-    const extrudeSettings = {
-      steps: 1,
-      depth: depth,
-      bevelEnabled: false,
-      curveSegments: 32,
-    };
-    return new THREE.ExtrudeGeometry(shapes, extrudeSettings);
-  };
-
-  const generateRevolveGeometry = (
-    shapes: THREE.Shape[],
-    axisLineId: string | undefined,
-    angleDeg: number,
-    sketchState: SketchState
-  ) => {
-    if (shapes.length === 0 || !axisLineId) return null;
-
-    const axisLine = sketchState.lines.find((l) => l.id === axisLineId);
-    if (!axisLine) return null;
-
-    const p1 = sketchState.points.find((p) => p.id === axisLine.p1);
-    const p2 = sketchState.points.find((p) => p.id === axisLine.p2);
-    if (!p1 || !p2) return null;
-
-    const axisStart = new THREE.Vector2(p1.x, p1.y);
-    const axisEnd = new THREE.Vector2(p2.x, p2.y);
-    const axisVec = new THREE.Vector2()
-      .subVectors(axisEnd, axisStart)
-      .normalize();
-
-    const geometries: THREE.BufferGeometry[] = [];
-
-    shapes.forEach((shape) => {
-      const points = shape.getPoints(); // 2D points of the profile
-      const lathePoints: THREE.Vector2[] = [];
-      points.forEach((pt) => {
-        const V = new THREE.Vector2(pt.x, pt.y);
-        const vecToPt = new THREE.Vector2().subVectors(V, axisStart);
-        const height = vecToPt.dot(axisVec); // Y component for Lathe
-        const projection = axisVec.clone().multiplyScalar(height);
-        const distVec = new THREE.Vector2().subVectors(vecToPt, projection);
-        const radius = distVec.length();
-        lathePoints.push(new THREE.Vector2(radius, height));
-      });
-      const angleRad = (angleDeg * Math.PI) / 180;
-      // Optimization: 32 segments is sufficient for preview
-      const geom = new THREE.LatheGeometry(lathePoints, 32, 0, angleRad);
-      const alignMatrix = new THREE.Matrix4();
-      const up = new THREE.Vector3(0, 1, 0);
-      const targetAxis = new THREE.Vector3(axisVec.x, axisVec.y, 0); // Z is 0 in 2D plane
-      const quaternion = new THREE.Quaternion().setFromUnitVectors(
-        up,
-        targetAxis
-      );
-      alignMatrix.makeRotationFromQuaternion(quaternion);
-      alignMatrix.setPosition(p1.x, p1.y, 0);
-      geom.applyMatrix4(alignMatrix);
-      geometries.push(geom);
-    });
-
-    if (geometries.length === 0) return null;
-    return geometries[0];
-  };
-
-  const generateGeometryForFeature = (
-    featType: "EXTRUDE" | "REVOLVE",
-    shapeList: THREE.Shape[],
-    depth: number,
-    angle: number,
-    axisId: string | undefined,
-    sketch: SketchState
-  ) => {
-    if (featType === "EXTRUDE") {
-      return generateExtrusionGeometry(shapeList, depth);
-    } else {
-      return generateRevolveGeometry(shapeList, axisId, angle, sketch);
-    }
-  };
-
-  // 2. Render History Features using CSG
-  useEffect(() => {
-    if (!historyGroupRef.current) return;
-    const group = historyGroupRef.current;
-
-    // Cleanup old meshes
-    while (group.children.length > 0) {
-      const obj = group.children[0] as THREE.Mesh;
-      if (obj.geometry) obj.geometry.dispose();
-      if (Array.isArray(obj.material))
-        obj.material.forEach((m: any) => m.dispose());
-      else (obj.material as THREE.Material).dispose();
-      group.remove(obj);
-    }
-
-    if (features.length === 0) return;
-
-    const evaluator = new Evaluator();
-    let resultBrush: Brush | null = null;
-
-    // Improved Material: Brighter, more visible
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xe5e7eb, // Tailwind gray-200 (Light grey/white)
-      roughness: 0.5,
-      metalness: 0.1, // Low metalness to look brighter/plastic-like
-      side: THREE.DoubleSide,
-    });
-
-    features.forEach((feature) => {
-      // Try to retrieve cached brush for this feature object
-      // If the feature object reference is the same as before, we can reuse the heavy geometry/BVH construction
-      let brush = brushCache.current.get(feature);
-
-      if (!brush) {
-        let actualDepth = feature.extrusionDepth;
-        let zOffset = 0;
-
-        if (feature.operation === "CUT" && feature.featureType === "EXTRUDE") {
-          const overlap = 1.0;
-          if (feature.throughAll) {
-            actualDepth = 50000;
-            zOffset = -50000 + overlap;
-          } else {
-            actualDepth = feature.extrusionDepth + overlap;
-            zOffset = -feature.extrusionDepth;
-          }
-        }
-
-        const shapes = getShapesFromSketch(feature.sketch); // Use full sketch for history features
-        const geom = generateGeometryForFeature(
-          feature.featureType,
-          shapes,
-          actualDepth,
-          feature.revolveAngle || 360,
-          feature.revolveAxisId,
-          feature.sketch
-        );
-
-        if (geom) {
-          if (
-            feature.operation === "CUT" &&
-            feature.featureType === "EXTRUDE"
-          ) {
-            geom.translate(0, 0, zOffset);
-          }
-
-          brush = new Brush(geom, material);
-          if (feature.transform)
-            brush.applyMatrix4(
-              new THREE.Matrix4().fromArray(feature.transform)
-            );
-          brush.updateMatrixWorld();
-
-          // Tag mesh with ID for picking
-          (brush as any).userData = { featureId: feature.id };
-
-          // Cache the newly created brush
-          brushCache.current.set(feature, brush);
-        }
-      }
-
-      if (brush) {
-        if (!resultBrush) {
-          resultBrush = brush;
-        } else {
-          if (feature.operation === "CUT") {
-            resultBrush = evaluator.evaluate(resultBrush, brush, SUBTRACTION);
-          } else {
-            resultBrush = evaluator.evaluate(resultBrush, brush, ADDITION);
-          }
-        }
-      }
-    });
-
-    if (resultBrush) {
-      const mesh = resultBrush as THREE.Mesh;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      // Important: Ensure matrixWorld is updated
-      mesh.updateMatrixWorld(true);
-      group.add(mesh);
-    }
-
-    // Recenter camera when features change (addition/removal)
-    setTimeout(fitView, 50);
-  }, [features, fitView]);
-
-  // Visualize Active Sketch in 3D (Lines Only)
-  useEffect(() => {
-    if (!sketchVisGroupRef.current) return;
-    const group = sketchVisGroupRef.current;
-    while (group.children.length > 0) group.remove(group.children[0]);
-
-    if (currentTransform) {
-      group.matrix.fromArray(currentTransform);
-      group.matrixAutoUpdate = false;
-      group.updateMatrixWorld(true);
-    } else {
-      group.matrix.identity();
-      group.matrixAutoUpdate = true;
-    }
-
-    // Render Lines
-    state.lines.forEach((line) => {
-      const p1 = state.points.find((p) => p.id === line.p1);
-      const p2 = state.points.find((p) => p.id === line.p2);
-      if (p1 && p2) {
-        const geom = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(p1.x, p1.y, 0),
-          new THREE.Vector3(p2.x, p2.y, 0),
-        ]);
-
-        const isSelected = selectedSketchElements.includes(line.id);
-        let mat: THREE.Material;
-        if (line.construction) {
-          mat = new THREE.LineDashedMaterial({
-            color: isSelected ? 0xffaa00 : 0x666666,
-            dashSize: 4,
-            gapSize: 2,
-          });
-        } else {
-          mat = new THREE.LineBasicMaterial({
-            color: isSelected ? 0xffaa00 : 0x3b82f6,
-            linewidth: isSelected ? 2 : 1,
-          });
-        }
-
-        const mesh = new THREE.Line(geom, mat);
-        if (line.construction) mesh.computeLineDistances();
-        mesh.userData = {
-          sketchId: line.id,
-          type: "line",
-          construction: line.construction,
-        };
-        group.add(mesh);
-      }
-    });
-
-    // Render Circles/Arcs
-    const renderArc = (
-      id: string,
-      centerId: string,
-      radius: number,
-      p1Id?: string,
-      p2Id?: string,
-      construction?: boolean
-    ) => {
-      const center = state.points.find((p) => p.id === centerId);
-      if (!center) return;
-
-      const curve = new THREE.EllipseCurve(
-        center.x,
-        center.y,
-        radius,
-        radius,
-        0,
-        2 * Math.PI,
-        false,
-        0
-      );
-
-      if (p1Id && p2Id) {
-        const p1 = state.points.find((p) => p.id === p1Id);
-        const p2 = state.points.find((p) => p.id === p2Id);
-        if (p1 && p2) {
-          const startAngle = Math.atan2(p1.y - center.y, p1.x - center.x);
-          const endAngle = Math.atan2(p2.y - center.y, p2.x - center.x);
-          let diff = endAngle - startAngle;
-          while (diff <= -Math.PI) diff += 2 * Math.PI;
-          while (diff > Math.PI) diff -= 2 * Math.PI;
-          const clockwise = diff < 0;
-          curve.aStartAngle = startAngle;
-          curve.aEndAngle = endAngle;
-          curve.aClockwise = clockwise;
-        }
-      }
-
-      const points = curve.getPoints(50);
-      const geom = new THREE.BufferGeometry().setFromPoints(points);
-      const isSelected = selectedSketchElements.includes(id);
-      const mat = new THREE.LineBasicMaterial({
-        color: isSelected ? 0xffaa00 : construction ? 0x666666 : 0x3b82f6,
-        linewidth: isSelected ? 2 : 1,
-      });
-      const mesh = new THREE.Line(geom, mat);
-      mesh.userData = {
-        sketchId: id,
-        type: "curve",
-        construction: construction,
-      };
-      group.add(mesh);
-    };
-
-    state.circles.forEach((c) =>
-      renderArc(c.id, c.center, c.radius, undefined, undefined, c.construction)
-    );
-    state.arcs.forEach((a) =>
-      renderArc(a.id, a.center, a.radius, a.p1, a.p2, a.construction)
-    );
-
-    if (group.children.length > 0) {
-      // Trigger fitView to frame the sketch
-      setTimeout(() => fitView(), 100);
-    }
-  }, [state, isConfigOpen, currentTransform, selectedSketchElements, fitView]); // Hover state removed from here to prevent full rebuilds
+  useSketchVisualization({
+    sketchVisGroupRef,
+    state,
+    currentTransform,
+    selectedSketchElements,
+    fitView,
+    isConfigOpen,
+  });
 
   // Optimized Effect for Hover/Selection Highlighting
   useEffect(() => {
@@ -924,22 +285,23 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   }, [selectedSketchElements, hoveredSketchElement]);
 
   // 3. Render Active Sketch Extrusion/Revolve Preview (Solid)
-  const previewShapes = useMemo(() => {
-    if (!isConfigOpen) return null; // Only calculate if config is open
+  const { geometry: previewGeometry, error: previewError } = useMemo(() => {
+    if (!isConfigOpen) return { geometry: null, error: null };
 
     if (state.lines.length === 0 && state.circles.length === 0) {
-      setErrorMsg(null);
-      return null;
+      return { geometry: null, error: null };
     }
 
-    // Pass selected IDs to filter what forms the shape
-    const shapes = getShapesFromSketch(
-      state,
-      selectedSketchElements.length > 0 ? selectedSketchElements : undefined
-    );
+    const shapes = getShapesFromSketch(state, {
+      allowedIds:
+        selectedSketchElements.length > 0 ? selectedSketchElements : undefined,
+      axisLineId: activeAxisId,
+    });
     if (shapes.length === 0) {
-      setErrorMsg("No closed profiles found in selection.");
-      return null;
+      return {
+        geometry: null,
+        error: "No closed profiles found in selection.",
+      };
     }
 
     let depth = localDepth;
@@ -957,8 +319,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     }
 
     if (featureType === "REVOLVE" && !activeAxisId) {
-      setErrorMsg("No axis line selected.");
-      return null;
+      return { geometry: null, error: "No axis line selected." };
     }
 
     const geom = generateGeometryForFeature(
@@ -971,16 +332,17 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     );
 
     if (!geom) {
-      setErrorMsg("Failed to generate geometry. Check profile/axis.");
-      return null;
+      return {
+        geometry: null,
+        error: "Failed to generate geometry. Check profile/axis.",
+      };
     }
 
     if (featureType === "EXTRUDE" && operation === "CUT") {
       geom.translate(0, 0, zOffset);
     }
 
-    setErrorMsg(null);
-    return geom;
+    return { geometry: geom as THREE.BufferGeometry, error: null };
   }, [
     state,
     localDepth,
@@ -993,291 +355,120 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     selectedSketchElements,
   ]);
 
-  // Visualize the Axis
   useEffect(() => {
-    const group = axisHelperGroupRef.current;
-    if (!group) return;
-    while (group.children.length > 0) group.remove(group.children[0]);
+    setErrorMsg(previewError);
+  }, [previewError]);
 
-    if (isConfigOpen && featureType === "REVOLVE" && activeAxisId) {
-      const line = state.lines.find((l) => l.id === activeAxisId);
-      const p1 = state.points.find((p) => p.id === line?.p1);
-      const p2 = state.points.find((p) => p.id === line?.p2);
+  useAxisVisualization({
+    axisHelperGroupRef,
+    state,
+    currentTransform,
+    isConfigOpen,
+    featureType,
+    activeAxisId,
+  });
 
-      if (p1 && p2) {
-        const dir = new THREE.Vector3(p2.x - p1.x, p2.y - p1.y, 0).normalize();
-        const center = new THREE.Vector3(
-          (p1.x + p2.x) / 2,
-          (p1.y + p2.y) / 2,
-          0
-        );
-        const pA = center.clone().add(dir.clone().multiplyScalar(1000));
-        const pB = center.clone().add(dir.clone().multiplyScalar(-1000));
+  usePreviewMesh({
+    meshGroupRef,
+    previewGeometry,
+    currentTransform,
+    operation,
+  });
 
-        const geometry = new THREE.BufferGeometry().setFromPoints([pA, pB]);
-        const material = new THREE.LineDashedMaterial({
-          color: 0xffa500,
-          linewidth: 2,
-          scale: 1,
-          dashSize: 10,
-          gapSize: 5,
-        });
-        const axisMesh = new THREE.Line(geometry, material);
-        axisMesh.computeLineDistances();
-        group.add(axisMesh);
+  useFaceHighlight({
+    highlightGroupRef,
+    selectedFaceData,
+  });
 
-        if (currentTransform) {
-          group.matrix.fromArray(currentTransform);
-          group.matrixAutoUpdate = false;
-          group.updateMatrixWorld(true);
-        } else {
-          group.matrix.identity();
-          group.matrixAutoUpdate = true;
+  const setRayFromEvent = useCallback((event: React.MouseEvent) => {
+    if (!cameraRef.current) return false;
+    const rect = mountRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+    setRayFromMouseEvent(
+      raycasterRef.current,
+      mouseRef.current,
+      event,
+      rect,
+      cameraRef.current
+    );
+    return true;
+  }, []);
+
+  const tryPickSketchElement = useCallback(() => {
+    if (!sketchVisGroupRef.current) return null;
+    return pickSketchElementId(
+      raycasterRef.current,
+      sketchVisGroupRef.current.children
+    );
+  }, []);
+
+  const tryPickFace = useCallback((objectsToCheck: THREE.Object3D[]) => {
+    const face = pickFaceData(raycasterRef.current, objectsToCheck);
+    if (!face) return false;
+    setSelectedFaceData(face);
+    setSelectedSketchElements([]);
+    return true;
+  }, []);
+
+  const onCanvasMouseMove = useCallback(
+    (event: React.MouseEvent) => {
+      if (isConfigOpen || !sketchVisGroupRef.current) return;
+      if (!setRayFromEvent(event)) return;
+
+      raycasterRef.current.params.Line.threshold = 3.0; // Increased threshold for easier hover
+
+      const intersects = raycasterRef.current.intersectObjects(
+        sketchVisGroupRef.current.children,
+        true
+      );
+
+      if (intersects.length > 0) {
+        const id = intersects[0].object.userData.sketchId;
+        if (id) {
+          if (hoveredSketchElement !== id) setHoveredSketchElement(id);
+          return;
         }
       }
-    }
-  }, [featureType, activeAxisId, state, currentTransform, isConfigOpen]);
+      if (hoveredSketchElement !== null) setHoveredSketchElement(null);
+    },
+    [hoveredSketchElement, isConfigOpen, setRayFromEvent]
+  );
 
-  useEffect(() => {
-    if (!meshGroupRef.current) return;
-    const group = meshGroupRef.current;
-
-    if (currentTransform) {
-      group.matrix.fromArray(currentTransform);
-      group.matrixAutoUpdate = false;
-      group.updateMatrixWorld(true);
-    } else {
-      group.matrix.identity();
-      group.matrixAutoUpdate = true;
-    }
-
-    while (group.children.length > 0) {
-      const obj = group.children[0] as THREE.Mesh;
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) (obj.material as THREE.Material).dispose();
-      group.remove(obj);
-    }
-
-    if (previewShapes) {
-      // Brighter Preview Colors
-      const color = operation === "CUT" ? 0xff6b6b : 0x60a5fa; // Brighter Red / Blue
-      const mat = new THREE.MeshStandardMaterial({
-        color: color,
-        roughness: 0.2,
-        metalness: 0.1,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.8,
-      });
-      const mesh = new THREE.Mesh(previewShapes, mat);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      group.add(mesh);
-    }
-  }, [previewShapes, currentTransform, operation]);
-
-  // Face Highlight & Picking Logic
-  useEffect(() => {
-    if (!highlightGroupRef.current) return;
-    const group = highlightGroupRef.current;
-    while (group.children.length > 0) {
-      const obj = group.children[0];
-      if ((obj as THREE.Mesh).geometry) (obj as THREE.Mesh).geometry.dispose();
-      group.remove(obj);
-    }
-    if (selectedFaceData) {
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute(
-        "position",
-        new THREE.BufferAttribute(selectedFaceData.faceVertices, 3)
-      );
-      const mesh = new THREE.Mesh(
-        geometry,
-        new THREE.MeshBasicMaterial({
-          color: 0xffaa00,
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity: 0.25,
-          depthTest: false,
-        })
-      );
-      mesh.matrix = selectedFaceData.matrixWorld;
-      mesh.matrixAutoUpdate = false;
-      group.add(mesh);
-    }
-  }, [selectedFaceData]);
-
-  const extractFace = (mesh: THREE.Mesh, faceIndex: number) => {
-    const geometry = mesh.geometry;
-    const pos = geometry.attributes.position;
-    const idx = geometry.index;
-    const getV = (i: number) => new THREE.Vector3().fromBufferAttribute(pos, i);
-    const i1 = idx ? idx.getX(faceIndex * 3) : faceIndex * 3;
-    const i2 = idx ? idx.getY(faceIndex * 3) : faceIndex * 3 + 1;
-    const i3 = idx ? idx.getZ(faceIndex * 3) : faceIndex * 3 + 2;
-    const vA = getV(i1),
-      vB = getV(i2),
-      vC = getV(i3);
-    const n = new THREE.Vector3().crossVectors(
-      new THREE.Vector3().subVectors(vB, vA),
-      new THREE.Vector3().subVectors(vC, vA)
-    );
-    if (n.lengthSq() < 1e-12)
-      return {
-        vertices: new Float32Array([]),
-        boundary: [],
-        normal: new THREE.Vector3(0, 0, 1),
-      };
-    n.normalize();
-    const constant = -n.dot(vA);
-    const vertices: number[] = [];
-    const edges = new Map<
-      string,
-      { a: THREE.Vector3; b: THREE.Vector3; count: number }
-    >();
-    const key = (v: THREE.Vector3) =>
-      `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`;
-    const edgeKey = (va: THREE.Vector3, vb: THREE.Vector3) => {
-      const ka = key(va),
-        kb = key(vb);
-      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-    };
-    const count = idx ? idx.count / 3 : pos.count / 3;
-    const tempV = new THREE.Vector3();
-    for (let f = 0; f < count; f++) {
-      const idx1 = idx ? idx.getX(f * 3) : f * 3;
-      const idx2 = idx ? idx.getY(f * 3) : f * 3 + 1;
-      const idx3 = idx ? idx.getZ(f * 3) : f * 3 + 2;
-      tempV.fromBufferAttribute(pos, idx1);
-      if (Math.abs(tempV.dot(n) + constant) > 0.002) continue;
-      const va = getV(idx1),
-        vb = getV(idx2),
-        vc = getV(idx3);
-      const fn = new THREE.Vector3()
-        .crossVectors(
-          new THREE.Vector3().subVectors(vb, va),
-          new THREE.Vector3().subVectors(vc, va)
-        )
-        .normalize();
-      if (fn.dot(n) < 0.9) continue;
-      vertices.push(va.x, va.y, va.z, vb.x, vb.y, vb.z, vc.x, vc.y, vc.z);
-      [
-        [va, vb],
-        [vb, vc],
-        [vc, va],
-      ].forEach((pair) => {
-        const k = edgeKey(pair[0], pair[1]);
-        if (!edges.has(k)) edges.set(k, { a: pair[0], b: pair[1], count: 0 });
-        edges.get(k)!.count++;
-      });
-    }
-    const boundary: THREE.Line3[] = [];
-    edges.forEach((e) => {
-      if (e.count === 1) boundary.push(new THREE.Line3(e.a, e.b));
-    });
-    return { vertices: new Float32Array(vertices), boundary, normal: n };
-  };
-
-  const onCanvasMouseMove = (event: React.MouseEvent) => {
-    if (isConfigOpen || !sketchVisGroupRef.current || !cameraRef.current)
-      return;
-    const rect = mountRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    mouseRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouseRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
-    raycasterRef.current.params.Line.threshold = 3.0; // Increased threshold for easier hover
-
-    const intersects = raycasterRef.current.intersectObjects(
-      sketchVisGroupRef.current.children,
-      true
-    );
-
-    if (intersects.length > 0) {
-      const id = intersects[0].object.userData.sketchId;
-      if (id) {
-        if (hoveredSketchElement !== id) setHoveredSketchElement(id);
+  const onCanvasClick = useCallback(
+    (event: React.MouseEvent) => {
+      if (
+        !meshGroupRef.current ||
+        !historyGroupRef.current ||
+        !sketchVisGroupRef.current ||
+        !cameraRef.current
+      )
         return;
-      }
-    }
-    if (hoveredSketchElement !== null) setHoveredSketchElement(null);
-  };
+      if (isConfigOpen) return; // Don't pick if config is open
 
-  const onCanvasClick = (event: React.MouseEvent) => {
-    if (
-      !meshGroupRef.current ||
-      !historyGroupRef.current ||
-      !sketchVisGroupRef.current ||
-      !cameraRef.current
-    )
-      return;
-    if (isConfigOpen) return; // Don't pick if config is open
+      if (!setRayFromEvent(event)) return;
 
-    const rect = mountRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    mouseRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouseRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
-
-    // 1. Check for Sketch Elements
-    raycasterRef.current.params.Line.threshold = 3.0; // Increased threshold
-    const sketchIntersects = raycasterRef.current.intersectObjects(
-      sketchVisGroupRef.current.children,
-      true
-    );
-
-    if (sketchIntersects.length > 0) {
-      const hit = sketchIntersects[0];
-      const sketchId = hit.object.userData.sketchId;
+      // 1. Check for Sketch Elements
+      const sketchId = tryPickSketchElement();
       if (sketchId) {
         setSelectedSketchElements((prev) => {
           if (prev.includes(sketchId))
             return prev.filter((id) => id !== sketchId);
           return [...prev, sketchId];
         });
-        // Clear face selection if we picked a sketch line
         setSelectedFaceData(null);
         return;
       }
-    }
 
-    // 2. Check for Solid Faces (existing logic)
-    const objectsToCheck = [...historyGroupRef.current.children];
-    const intersects = raycasterRef.current.intersectObjects(
-      objectsToCheck,
-      true
-    );
-
-    if (intersects.length > 0) {
-      const hit = intersects[0];
-      const mesh = hit.object as THREE.Mesh;
-
-      if (hit.face) {
-        const faceData = extractFace(mesh, hit.faceIndex!);
-        if (faceData.vertices.length > 0) {
-          const normalWorld = faceData.normal
-            .clone()
-            .transformDirection(mesh.matrixWorld)
-            .normalize();
-          setSelectedFaceData({
-            point: hit.point,
-            normal: normalWorld,
-            boundaryEdges: faceData.boundary,
-            faceVertices: faceData.vertices,
-            matrixWorld: mesh.matrixWorld,
-          });
-          // Deselect sketch elements if face picked
-          setSelectedSketchElements([]);
-        }
+      // 2. Check for Solid Faces
+      const objectsToCheck = [...historyGroupRef.current.children];
+      const didPickFace = tryPickFace(objectsToCheck);
+      if (!didPickFace) {
+        setSelectedFaceData(null);
+        setSelectedSketchElements([]);
       }
-    } else {
-      setSelectedFaceData(null);
-      // If clicked on empty space, clear all? Maybe keep sketch selection?
-      // Let's clear both for consistency with most tools.
-      setSelectedSketchElements([]);
-    }
-  };
+    },
+    [isConfigOpen, setRayFromEvent, tryPickFace, tryPickSketchElement]
+  );
 
   const handleExportSTL = () => {
     const exporter = new STLExporter();
@@ -1410,298 +601,33 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onClick={onCanvasClick}
         onMouseMove={onCanvasMouseMove}
       />
-      <div className="absolute top-4 right-4 z-10 flex gap-2">
-        <button
-          onClick={fitView}
-          className="bg-[#1a1a1a]/90 border border-white/10 text-white px-3 py-2 rounded-xl text-xs font-bold uppercase hover:bg-white/10"
-          title="Recenter View"
-        >
-          ⛶
-        </button>
-        <button
-          onClick={handleExportSTL}
-          className="bg-[#1a1a1a]/90 border border-white/10 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-white/10 flex items-center gap-2"
-        >
-          <span className="text-lg">⬇</span> Export STL
-        </button>
-      </div>
-
-      {/* Main Action Bar (When no config open) */}
-      {!isConfigOpen && hasActiveSketch && (
-        <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 animate-in fade-in">
-          {/* Operations Menu */}
-          <div className="flex flex-col gap-1 mt-2">
-            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest px-2">
-              Operations
-            </span>
-            <button
-              onClick={() => {
-                setFeatureType("EXTRUDE");
-                setIsConfigOpen(true);
-              }}
-              className="flex items-center gap-3 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg transition-all text-left"
-            >
-              <span className="text-xl">⬆</span>
-              <div className="flex flex-col">
-                <span className="text-xs font-bold uppercase">Extrude</span>
-                <span className="text-[9px] opacity-80">
-                  {selectedSketchElements.length > 0
-                    ? `${selectedSketchElements.length} selected items`
-                    : "Pull entire sketch"}
-                </span>
-              </div>
-            </button>
-            <button
-              onClick={() => {
-                setFeatureType("REVOLVE");
-                setIsConfigOpen(true);
-              }}
-              className="flex items-center gap-3 px-4 py-3 bg-orange-600 hover:bg-orange-500 text-white rounded-xl shadow-lg transition-all text-left"
-            >
-              <span className="text-xl">↻</span>
-              <div className="flex flex-col">
-                <span className="text-xs font-bold uppercase">Revolve</span>
-                <span className="text-[9px] opacity-80">
-                  {selectedSketchElements.length > 0
-                    ? `${selectedSketchElements.length} selected items`
-                    : "Spin entire sketch"}
-                </span>
-              </div>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Config Panel (Extrude/Revolve) */}
-      {isConfigOpen && (
-        <div
-          className="absolute top-4 left-4 z-10 bg-[#1a1a1a]/95 backdrop-blur-xl p-5 rounded-2xl border border-white/10 shadow-2xl w-72 flex flex-col gap-4 animate-in slide-in-from-left-4"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center justify-between border-b border-white/5 pb-3">
-            <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
-              <span className="text-lg">⚙️</span>{" "}
-              {initialFeatureParams ? "Edit Feature" : "Feature Properties"}
-            </h3>
-          </div>
-
-          {/* Feature Type Toggle */}
-          <div className="flex bg-[#000] p-1 rounded-lg mb-2">
-            <button
-              onClick={() => setFeatureType("EXTRUDE")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                featureType === "EXTRUDE"
-                  ? "bg-purple-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Extrude
-            </button>
-            <button
-              onClick={() => setFeatureType("REVOLVE")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                featureType === "REVOLVE"
-                  ? "bg-orange-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Revolve
-            </button>
-          </div>
-
-          {/* Operation Toggle */}
-          <div className="flex bg-[#000] p-1 rounded-lg">
-            <button
-              onClick={() => setOperation("NEW")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                operation === "NEW"
-                  ? "bg-blue-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              New
-            </button>
-            <button
-              onClick={() => setOperation("CUT")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                operation === "CUT"
-                  ? "bg-red-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Cut
-            </button>
-          </div>
-
-          {featureType === "EXTRUDE" && (
-            <>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="throughAll"
-                  checked={throughAll}
-                  onChange={(e) => setThroughAll(e.target.checked)}
-                  className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500"
-                />
-                <label
-                  htmlFor="throughAll"
-                  className="text-xs text-gray-300 font-medium select-none"
-                >
-                  Through All
-                </label>
-              </div>
-              <div
-                className={`space-y-2 transition-opacity ${
-                  throughAll ? "opacity-40 pointer-events-none" : "opacity-100"
-                }`}
-              >
-                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-                  Depth (mm)
-                </label>
-                <div className="flex items-center gap-3">
-                  <div className="relative flex-1">
-                    <input
-                      type="number"
-                      min="1"
-                      max="1000"
-                      value={localDepth}
-                      onChange={(e) =>
-                        setLocalDepth(parseFloat(e.target.value))
-                      }
-                      className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-sm font-mono text-blue-400 focus:outline-none focus:border-blue-500"
-                    />
-                    <span className="absolute right-3 top-2 text-xs text-gray-600 pointer-events-none">
-                      mm
-                    </span>
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="500"
-                  value={localDepth}
-                  onChange={(e) => setLocalDepth(parseFloat(e.target.value))}
-                  className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-            </>
-          )}
-
-          {featureType === "REVOLVE" && (
-            <>
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-                  Angle (Deg)
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="number"
-                    min="1"
-                    max="360"
-                    value={revolveAngle}
-                    onChange={(e) =>
-                      setRevolveAngle(parseFloat(e.target.value))
-                    }
-                    className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-sm font-mono text-orange-400 focus:outline-none focus:border-orange-500"
-                  />
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="360"
-                  value={revolveAngle}
-                  onChange={(e) => setRevolveAngle(parseFloat(e.target.value))}
-                  className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-                  Axis Line
-                </label>
-                <select
-                  value={activeAxisId || ""}
-                  onChange={(e) => setActiveAxisId(e.target.value)}
-                  className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-xs text-gray-300 focus:outline-none"
-                >
-                  <option value="" disabled>
-                    Select Axis...
-                  </option>
-                  {state.lines.map((l, i) => (
-                    <option key={l.id} value={l.id}>
-                      Line {i + 1} {l.construction ? "(Constr)" : ""}{" "}
-                      {l.id === activeAxisId ? "(Selected)" : ""}
-                    </option>
-                  ))}
-                </select>
-                {!activeAxisId && (
-                  <p className="text-[10px] text-red-400">
-                    Please select a line to revolve around.
-                  </p>
-                )}
-              </div>
-            </>
-          )}
-
-          {initialFeatureParams && (
-            <div className="pt-2 border-t border-white/5">
-              <button
-                onClick={handleEditSketch}
-                className="w-full py-2 mb-2 rounded-lg bg-[#2a2a2a] hover:bg-[#333] border border-white/5 text-xs font-bold text-purple-400 uppercase flex items-center justify-center gap-2"
-              >
-                <span>✎</span> Edit Sketch Geometry
-              </button>
-            </div>
-          )}
-
-          {errorMsg && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-              <p className="text-[10px] text-red-400 font-bold">{errorMsg}</p>
-            </div>
-          )}
-
-          <div className="flex gap-2 pt-2">
-            <button
-              onClick={() => setIsConfigOpen(false)}
-              className="flex-1 py-2 rounded-lg bg-[#333] hover:bg-[#444] text-xs font-bold text-gray-300 uppercase"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCommit}
-              disabled={!!errorMsg}
-              className={`flex-1 py-2 rounded-lg text-xs font-bold text-white uppercase shadow-lg ${
-                errorMsg ? "bg-gray-700" : "bg-blue-600 hover:bg-blue-500"
-              }`}
-            >
-              OK
-            </button>
-          </div>
-        </div>
-      )}
-
-      {selectedFaceData && !isConfigOpen && (
-        <div
-          className="absolute z-20 bg-black/80 backdrop-blur border border-blue-500/50 text-white p-2 rounded-lg shadow-lg pointer-events-none"
-          style={{
-            left: "50%",
-            top: "50%",
-            transform: "translate(-50%, -50%)",
-          }}
-        >
-          <div className="text-xs font-bold mb-1 text-blue-300 text-center">
-            Face Selected
-          </div>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleCreateSketchOnFace();
-            }}
-            className="pointer-events-auto bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded shadow-lg"
-          >
-            Sketch on Face
-          </button>
-        </div>
-      )}
+      <ThreeViewOverlay
+        hasActiveSketch={hasActiveSketch}
+        isConfigOpen={isConfigOpen}
+        selectedSketchElements={selectedSketchElements}
+        featureType={featureType}
+        operation={operation}
+        throughAll={throughAll}
+        localDepth={localDepth}
+        revolveAngle={revolveAngle}
+        activeAxisId={activeAxisId}
+        lines={state.lines}
+        initialFeatureParams={initialFeatureParams}
+        errorMsg={errorMsg}
+        selectedFaceData={selectedFaceData}
+        onFitView={fitView}
+        onExportSTL={handleExportSTL}
+        onSetFeatureType={setFeatureType}
+        onSetIsConfigOpen={setIsConfigOpen}
+        onSetOperation={setOperation}
+        onSetThroughAll={setThroughAll}
+        onSetLocalDepth={setLocalDepth}
+        onSetRevolveAngle={setRevolveAngle}
+        onSetActiveAxisId={(value) => setActiveAxisId(value)}
+        onCommit={handleCommit}
+        onEditSketch={handleEditSketch}
+        onCreateSketchOnFace={handleCreateSketchOnFace}
+      />
     </div>
   );
 };
