@@ -14,6 +14,7 @@ type ThreeViewOverlayProps = {
   lines: Line[];
   initialFeatureParams?: Feature;
   errorMsg: string | null;
+  isGeneratingPreview?: boolean;
   selectedFaceData: unknown | null;
   showProjectionWarning: boolean;
   isReimportMode: boolean;
@@ -46,6 +47,7 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   lines,
   initialFeatureParams,
   errorMsg,
+  isGeneratingPreview,
   selectedFaceData,
   showProjectionWarning,
   isReimportMode,
@@ -370,6 +372,12 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             </div>
           )}
 
+          {isGeneratingPreview && (
+            <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+              <p className="text-[10px] text-blue-400 font-bold">Generating preview...</p>
+            </div>
+          )}
+
           <div className="flex gap-2 pt-2">
             <button
               onClick={() => onSetIsConfigOpen(false)}
@@ -379,9 +387,9 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             </button>
             <button
               onClick={onCommit}
-              disabled={!!errorMsg}
+              disabled={!!errorMsg || isGeneratingPreview}
               className={`flex-1 py-2 rounded-lg text-xs font-bold text-white uppercase shadow-lg ${
-                errorMsg ? "bg-gray-700" : "bg-blue-600 hover:bg-blue-500"
+                errorMsg || isGeneratingPreview ? "bg-gray-700" : "bg-blue-600 hover:bg-blue-500"
               }`}
             >
               OK

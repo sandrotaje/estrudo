@@ -10,8 +10,10 @@ import { STLExporter } from "three/addons/exporters/STLExporter.js";
 import { SketchState, Feature, Line, Arc, Circle, Point } from "../types";
 import {
   generateGeometryForFeature,
+  generateGeometryForFeatureReplicad,
   getShapesFromSketch,
 } from "./ThreeView/sketchGeometry";
+import { replicadToThree } from "./ThreeView/replicadThreeUtils";
 import {
   pickFaceData,
   pickSketchElementId,
@@ -89,11 +91,15 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   );
   const [isConfigOpen, setIsConfigOpen] = useState(!!initialFeatureParams);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [previewGeometry, setPreviewGeometry] = useState<THREE.BufferGeometry | null>(null);
+  const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
 
   // Axis Selection State
   const [activeAxisId, setActiveAxisId] = useState<string | null>(
     initialFeatureParams?.revolveAxisId || null
   );
+
+  const lastResultShapeRef = useRef<any>(null);
 
   // Selection & Interaction State
   const [selectedSketchElements, setSelectedSketchElements] = useState<
@@ -254,11 +260,14 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // --- Geometry Helpers ---
 
   useHistoryCSG({
-    features,
+    features: features || [],
     historyGroupRef,
     brushCache,
     activeAxisId,
     fitView,
+    onLastResultShapeReady: (shape) => {
+      lastResultShapeRef.current = shape;
+    },
   });
 
   useSketchVisualization({
@@ -295,65 +304,84 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     });
   }, [selectedSketchElements, hoveredSketchElement]);
 
-  // 3. Render Active Sketch Extrusion/Revolve Preview (Solid)
-  const { geometry: previewGeometry, error: previewError } = useMemo(() => {
-    if (!isConfigOpen) return { geometry: null, error: null };
+  // 3. Render Active Sketch Extrusion/Revolve Preview (Solid) - Using Replicad with debouncing
+  useEffect(() => {
+    let active = true;
+    let timeoutId: NodeJS.Timeout;
 
-    if (state.lines.length === 0 && state.circles.length === 0) {
-      return { geometry: null, error: null };
-    }
-
-    const shapes = getShapesFromSketch(state, {
-      allowedIds:
-        selectedSketchElements.length > 0 ? selectedSketchElements : undefined,
-      axisLineId: activeAxisId,
-    });
-    if (shapes.length === 0) {
-      return {
-        geometry: null,
-        error: "No closed profiles found in selection.",
-      };
-    }
-
-    let depth = localDepth;
-    let zOffset = 0;
-
-    if (featureType === "EXTRUDE" && operation === "CUT") {
-      const overlap = 1.0;
-      if (throughAll) {
-        depth = 1000;
-        zOffset = -1000 + overlap;
-      } else {
-        depth = localDepth + overlap;
-        zOffset = -localDepth;
+    const generatePreview = async () => {
+      if (!isConfigOpen) {
+        setPreviewGeometry(null);
+        setErrorMsg(null);
+        setIsGeneratingPreview(false);
+        return;
       }
-    }
 
-    if (featureType === "REVOLVE" && !activeAxisId) {
-      return { geometry: null, error: "No axis line selected." };
-    }
+      if (state.lines.length === 0 && state.circles.length === 0) {
+        setPreviewGeometry(null);
+        setErrorMsg(null);
+        setIsGeneratingPreview(false);
+        return;
+      }
 
-    const geom = generateGeometryForFeature(
-      featureType,
-      shapes,
-      depth,
-      revolveAngle,
-      activeAxisId || undefined,
-      state
-    );
+      // Check if we have closed profiles
+      const shapes = getShapesFromSketch(state, {
+        allowedIds:
+          selectedSketchElements.length > 0 ? selectedSketchElements : undefined,
+        axisLineId: activeAxisId,
+      });
+      if (shapes.length === 0) {
+        setPreviewGeometry(null);
+        setErrorMsg("No closed profiles found in selection.");
+        setIsGeneratingPreview(false);
+        return;
+      }
 
-    if (!geom) {
-      return {
-        geometry: null,
-        error: "Failed to generate geometry. Check profile/axis.",
-      };
-    }
+      if (featureType === "REVOLVE" && !activeAxisId) {
+        setPreviewGeometry(null);
+        setErrorMsg("No axis line selected.");
+        setIsGeneratingPreview(false);
+        return;
+      }
 
-    if (featureType === "EXTRUDE" && operation === "CUT") {
-      geom.translate(0, 0, zOffset);
-    }
+      setIsGeneratingPreview(true);
 
-    return { geometry: geom as THREE.BufferGeometry, error: null };
+      // Generate geometry using Replicad with lower quality for faster preview
+      const geometry = await generateGeometryForFeatureReplicad(
+        featureType,
+        state,
+        localDepth,
+        revolveAngle,
+        activeAxisId || undefined,
+        operation,
+        throughAll,
+        selectedSketchElements.length > 0 ? selectedSketchElements : undefined,
+        true // isPreview = true for faster generation
+      );
+
+      if (!active) return;
+
+      if (!geometry) {
+        setPreviewGeometry(null);
+        setErrorMsg("Failed to generate geometry. Check profile/axis.");
+        setIsGeneratingPreview(false);
+        return;
+      }
+
+      setPreviewGeometry(geometry);
+      setErrorMsg(null);
+      setIsGeneratingPreview(false);
+    };
+
+    // Debounce the preview generation by 300ms
+    timeoutId = setTimeout(() => {
+      generatePreview();
+    }, 300);
+
+    return () => {
+      active = false;
+      clearTimeout(timeoutId);
+    };
   }, [
     state,
     localDepth,
@@ -367,8 +395,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   ]);
 
   useEffect(() => {
-    setErrorMsg(previewError);
-  }, [previewError]);
+    setErrorMsg(errorMsg);
+  }, [errorMsg]);
 
   useAxisVisualization({
     axisHelperGroupRef,
@@ -655,15 +683,37 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   );
 
   const handleExportSTL = () => {
-    const exporter = new STLExporter();
-    const result = exporter.parse(historyGroupRef.current!, { binary: true });
-    const blob = new Blob([result], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "model.stl";
-    link.click();
-    URL.revokeObjectURL(url);
+    if (!lastResultShapeRef.current) {
+      console.warn("No geometry to export");
+      return;
+    }
+
+    // Generate high-resolution mesh just for export
+    try {
+      // Final: tolerance=0.1, angularTolerance=0.1 (High quality)
+      const highResGeometry = replicadToThree(
+        lastResultShapeRef.current,
+        0.1,
+        0.1
+      );
+
+      const exportMesh = new THREE.Mesh(highResGeometry);
+      const exporter = new STLExporter();
+      const result = exporter.parse(exportMesh, { binary: true });
+      
+      const blob = new Blob([result], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "model.stl";
+      link.click();
+      URL.revokeObjectURL(url);
+      
+      // Cleanup the temporary geometry
+      highResGeometry.dispose();
+    } catch (error) {
+      console.error("Export failed:", error);
+    }
   };
 
   const handleCommit = () => {
@@ -739,6 +789,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         lines={state.lines}
         initialFeatureParams={initialFeatureParams}
         errorMsg={errorMsg}
+        isGeneratingPreview={isGeneratingPreview}
         selectedFaceData={selectedFaceData}
         showProjectionWarning={showProjectionWarning}
         isReimportMode={isReimportMode}

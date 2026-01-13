@@ -1,5 +1,9 @@
 import * as THREE from "three";
 import { ConstraintType, SketchState } from "../../types";
+import { createReplicadProfiles } from "./replicadUtils";
+import { replicadToThree } from "./replicadThreeUtils";
+import { initReplicad } from "../../services/replicad";
+import { revolution } from "replicad";
 
 const isPointInside = (point: THREE.Vector2, polygon: THREE.Vector2[]) => {
   let inside = false;
@@ -250,6 +254,10 @@ export const getShapesFromSketch = (
   return rootShapes;
 };
 
+/**
+ * @deprecated This function uses Three.js ExtrudeGeometry which may not match Replicad results exactly.
+ * Use generateGeometryForFeatureReplicad instead for consistent preview and final geometry.
+ */
 export const generateExtrusionGeometry = (
   shapes: THREE.Shape[],
   depth: number
@@ -264,6 +272,10 @@ export const generateExtrusionGeometry = (
   return new THREE.ExtrudeGeometry(shapes, extrudeSettings);
 };
 
+/**
+ * @deprecated This function uses Three.js LatheGeometry which may not match Replicad results exactly.
+ * Use generateGeometryForFeatureReplicad instead for consistent preview and final geometry.
+ */
 export const generateRevolveGeometry = (
   shapes: THREE.Shape[],
   axisLineId: string | undefined,
@@ -318,6 +330,10 @@ export const generateRevolveGeometry = (
   return geometries[0];
 };
 
+/**
+ * @deprecated This function uses Three.js geometry generation which may not match Replicad results exactly.
+ * Use generateGeometryForFeatureReplicad instead for consistent preview and final geometry.
+ */
 export const generateGeometryForFeature = (
   featType: "EXTRUDE" | "REVOLVE",
   shapeList: THREE.Shape[],
@@ -330,5 +346,153 @@ export const generateGeometryForFeature = (
     return generateExtrusionGeometry(shapeList, depth);
   } else {
     return generateRevolveGeometry(shapeList, axisId, angle, sketch);
+  }
+};
+
+/**
+ * Generate preview geometry using Replicad instead of Three.js
+ * This ensures the preview matches the final CSG result exactly
+ */
+export const generateGeometryForFeatureReplicad = async (
+  featType: "EXTRUDE" | "REVOLVE",
+  sketchState: SketchState,
+  depth: number,
+  angle: number,
+  axisId: string | undefined,
+  operation: "NEW" | "CUT",
+  throughAll: boolean,
+  allowedIds?: string[],
+  isPreview: boolean = true
+): Promise<THREE.BufferGeometry | null> => {
+  try {
+    // Ensure Replicad is initialized
+    await initReplicad();
+
+    // Create Replicad drawings from the sketch
+    const drawings = createReplicadProfiles(sketchState, {
+      allowedIds,
+      axisLineId: axisId,
+    });
+
+    if (drawings.length === 0) {
+      console.warn("No drawings created for preview");
+      return null;
+    }
+
+    // Handle holes by sorting by area and checking containment
+    const drawingData = drawings.map((d) => {
+      const bbox = d.boundingBox;
+      const [[xMin, yMin], [xMax, yMax]] = bbox.bounds;
+      const area = (xMax - xMin) * (yMax - yMin);
+      return { drawing: d, area, xMin, xMax, yMin, yMax };
+    });
+    drawingData.sort((a, b) => b.area - a.area);
+
+    let combinedDrawing = drawingData[0].drawing;
+    for (let i = 1; i < drawingData.length; i++) {
+      const current = drawingData[i];
+      const parent = drawingData.find(
+        (p, idx) =>
+          idx < i &&
+          current.xMin > p.xMin &&
+          current.xMax < p.xMax &&
+          current.yMin > p.yMin &&
+          current.yMax < p.yMax
+      );
+
+      if (parent) {
+        combinedDrawing = combinedDrawing.cut(current.drawing);
+      } else {
+        combinedDrawing = combinedDrawing.fuse(current.drawing);
+      }
+    }
+
+    const sketch = combinedDrawing.sketchOnPlane();
+    let shape: any;
+
+    if (featType === "EXTRUDE") {
+      let actualDepth = depth;
+      let zOffset = 0;
+
+      if (operation === "CUT") {
+        const overlap = 1.0;
+        if (throughAll) {
+          actualDepth = 1000;
+          zOffset = overlap; // Start slightly above and extrude into (positive Z is "up" from plane)
+        } else {
+          actualDepth = depth + overlap;
+          zOffset = overlap; // Offset so it cuts into the material
+        }
+        // In Replicad extrude(depth) extrudes along the normal (Z+).
+        // To cut "into" the face when the sketch is on a face, we need to extrude in Z-
+        shape = sketch.extrude(-actualDepth);
+        shape = shape.translateZ(zOffset);
+      } else {
+        shape = sketch.extrude(actualDepth);
+      }
+    } else if (featType === "REVOLVE") {
+      // Find the axis line and its position
+      let axisVector: [number, number, number] = [0, 1, 0];
+      let axisOrigin: [number, number] = [0, 0];
+      const axisLine = sketchState.lines.find((l) => l.id === axisId);
+
+      if (axisLine) {
+        const p1 = sketchState.points.find((p) => p.id === axisLine.p1);
+        const p2 = sketchState.points.find((p) => p.id === axisLine.p2);
+        if (p1 && p2) {
+          axisOrigin = [p1.x, p1.y];
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 1e-6) {
+            axisVector = [dx / len, dy / len, 0];
+          }
+        }
+      }
+
+      // Translate the drawing so the axis passes through the origin
+      // This is required for Replicad's revolve operation
+      const translatedDrawing = combinedDrawing.translate(-axisOrigin[0], -axisOrigin[1]);
+      const translatedSketch = translatedDrawing.sketchOnPlane();
+
+      // Check if profile crosses the revolve axis (now at origin)
+      const bounds = translatedDrawing.boundingBox.bounds;
+      const [[xMin, yMin], [xMax, yMax]] = bounds;
+
+      const isVerticalAxis =
+        Math.abs(axisVector[0]) < 0.01 && Math.abs(axisVector[1]) > 0.99;
+      const isHorizontalAxis =
+        Math.abs(axisVector[0]) > 0.99 && Math.abs(axisVector[1]) < 0.01;
+
+      if (isVerticalAxis && xMin < -0.001 && xMax > 0.001) {
+        console.error("Profile crosses the vertical revolve axis!");
+        return null;
+      }
+
+      if (isHorizontalAxis && yMin < -0.001 && yMax > 0.001) {
+        console.error("Profile crosses the horizontal revolve axis!");
+        return null;
+      }
+
+      // Revolve around the axis (now passing through origin)
+      // We use the exported revolution function to support angle
+      // @ts-ignore - Replicad's sketchOnPlane returns a Sketch which HAS .face() but types are messy
+      const face = translatedSketch.face();
+      let revolvedShape = revolution(face, [0, 0, 0], axisVector, angle);
+      
+      // Translate back to original position
+      shape = revolvedShape.translate(axisOrigin[0], axisOrigin[1], 0);
+    }
+
+    // Convert Replicad shape to Three.js geometry
+    // Use lower quality (higher tolerance) for faster preview generation
+    // Preview: tolerance=2.0 (faster), Final: tolerance=0.1 (higher quality)
+    const tolerance = isPreview ? 2.0 : 0.1;
+    const angularTolerance = isPreview ? 0.8 : 0.1;
+    const geometry = replicadToThree(shape, tolerance, angularTolerance);
+    return geometry;
+  } catch (error) {
+    console.error("Error generating replicad preview geometry:", error);
+    return null;
   }
 };

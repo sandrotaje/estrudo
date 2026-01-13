@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import * as THREE from "three";
 import type { Feature } from "../../types";
 import { clearThreeGroup } from "./threeUtils";
@@ -6,6 +6,7 @@ import { createReplicadProfiles } from "./replicadUtils";
 import { generateRevolveGeometry, getShapesFromSketch } from "./sketchGeometry";
 import { initReplicad } from "../../services/replicad";
 import { replicadToThree } from "./replicadThreeUtils";
+import { revolution } from "replicad";
 
 type UseHistoryCSGParams = {
   features: Feature[];
@@ -13,6 +14,7 @@ type UseHistoryCSGParams = {
   brushCache: MutableRefObject<WeakMap<Feature, any>>; // Now stores Replicad Shapes
   activeAxisId: string | null;
   fitView: () => void;
+  onLastResultShapeReady?: (shape: any) => void;
 };
 
 export const useHistoryCSG = ({
@@ -21,6 +23,7 @@ export const useHistoryCSG = ({
   brushCache,
   activeAxisId,
   fitView,
+  onLastResultShapeReady,
 }: UseHistoryCSGParams) => {
   useEffect(() => {
     let active = true;
@@ -34,7 +37,10 @@ export const useHistoryCSG = ({
       if (!active) return;
 
       clearThreeGroup(group);
-      if (features.length === 0) return;
+      if (features.length === 0) {
+        if (onLastResultShapeReady) onLastResultShapeReady(null);
+        return;
+      }
 
       let resultShape: any = null;
 
@@ -105,21 +111,19 @@ export const useHistoryCSG = ({
               const overlap = 1.0;
               if (feature.throughAll) {
                 actualDepth = 1000;
-                zOffset = -1000 + overlap;
+                zOffset = overlap;
               } else {
                 actualDepth = feature.extrusionDepth + overlap;
-                zOffset = -feature.extrusionDepth;
+                zOffset = overlap;
               }
-            }
-            
-            currentFeatureShape = sketch.extrude(actualDepth);
-            
-            if (feature.operation === "CUT") {
-               currentFeatureShape = currentFeatureShape.translateZ(zOffset);
+              currentFeatureShape = sketch.extrude(-actualDepth).translateZ(zOffset);
+            } else {
+              currentFeatureShape = sketch.extrude(actualDepth);
             }
           } else if (feature.featureType === "REVOLVE") {
-            // Find the axis vector from the sketch
+            // Find the axis line and its position
             let axisVector: [number, number, number] = [0, 1, 0];
+            let axisOrigin: [number, number] = [0, 0];
             const axisId = feature.revolveAxisId || activeAxisId;
             const axisLine = feature.sketch.lines.find(l => l.id === axisId);
             
@@ -127,6 +131,7 @@ export const useHistoryCSG = ({
               const p1 = feature.sketch.points.find(p => p.id === axisLine.p1);
               const p2 = feature.sketch.points.find(p => p.id === axisLine.p2);
               if (p1 && p2) {
+                axisOrigin = [p1.x, p1.y];
                 const dx = p2.x - p1.x;
                 const dy = p2.y - p1.y;
                 const len = Math.sqrt(dx*dx + dy*dy);
@@ -136,7 +141,7 @@ export const useHistoryCSG = ({
               }
             }
             
-            console.log(`Revolving around axis: [${axisVector.join(', ')}]`);
+            console.log(`Revolving around axis: [${axisVector.join(', ')}] at origin [${axisOrigin.join(', ')}]`);
             console.log(`Sketch has ${feature.sketch.circles.length} circles, ${feature.sketch.lines.length} lines, ${feature.sketch.arcs?.length || 0} arcs`);
             console.log(`Axis line ID: ${axisId}`);
             
@@ -147,9 +152,13 @@ export const useHistoryCSG = ({
               axisVector = [0, 1, 0];
             }
             
-            // Log the combined drawing info before revolve
-            const bounds = combinedDrawing.boundingBox.bounds;
-            console.log(`Combined drawing bounds:`, bounds);
+            // Translate the drawing so the axis passes through the origin
+            const translatedDrawing = combinedDrawing.translate(-axisOrigin[0], -axisOrigin[1]);
+            const translatedSketch = translatedDrawing.sketchOnPlane();
+            
+            // Log the translated drawing info before revolve
+            const bounds = translatedDrawing.boundingBox.bounds;
+            console.log(`Translated drawing bounds:`, bounds);
             const [[xMin, yMin], [xMax, yMax]] = bounds;
             
             // Check if profile crosses the revolve axis
@@ -174,9 +183,15 @@ export const useHistoryCSG = ({
               continue;
             }
             
-            console.log(`Calling sketch.revolve() with angle: ${feature.revolveAngle || 360}`);
+            console.log(`Calling revolution() with angle: ${feature.revolveAngle || 360}`);
             
-            currentFeatureShape = sketch.revolve(axisVector);
+            // Revolve around the axis (now passing through origin)
+            // @ts-ignore
+            const face = translatedSketch.face();
+            let revolvedShape = revolution(face, [0, 0, 0], axisVector, feature.revolveAngle || 360);
+            
+            // Translate back to original position
+            currentFeatureShape = revolvedShape.translate(axisOrigin[0], axisOrigin[1], 0);
             console.log(`Revolve succeeded`);
           }
 
@@ -291,8 +306,11 @@ export const useHistoryCSG = ({
       }
 
       if (resultShape && active) {
+        if (onLastResultShapeReady) onLastResultShapeReady(resultShape);
         try {
-          const geometry = replicadToThree(resultShape);
+          // Use very low quality (higher tolerance) for history view mesh
+          // This keeps the UI responsive. High quality is only for export.
+          const geometry = replicadToThree(resultShape, 2.0, 0.8);
           const mesh = new THREE.Mesh(geometry, material);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
