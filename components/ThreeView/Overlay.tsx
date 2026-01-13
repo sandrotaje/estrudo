@@ -15,6 +15,8 @@ type ThreeViewOverlayProps = {
   initialFeatureParams?: Feature;
   errorMsg: string | null;
   selectedFaceData: unknown | null;
+  showProjectionWarning: boolean;
+  isReimportMode: boolean;
   onFitView: () => void;
   onExportSTL: () => void;
   onSetFeatureType: (value: "EXTRUDE" | "REVOLVE") => void;
@@ -27,6 +29,8 @@ type ThreeViewOverlayProps = {
   onCommit: () => void;
   onEditSketch: () => void;
   onCreateSketchOnFace: () => void;
+  onStartReimport: () => void;
+  onCancelReimport: () => void;
 };
 
 const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
@@ -43,6 +47,8 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   initialFeatureParams,
   errorMsg,
   selectedFaceData,
+  showProjectionWarning,
+  isReimportMode,
   onFitView,
   onExportSTL,
   onSetFeatureType,
@@ -55,6 +61,8 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onCommit,
   onEditSketch,
   onCreateSketchOnFace,
+  onStartReimport,
+  onCancelReimport,
 }) => {
   return (
     <>
@@ -73,6 +81,52 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
           <span className="text-lg">⬇</span> Export STL
         </button>
       </div>
+      
+      {/* Warning banner for features with projected lines */}
+      {showProjectionWarning && initialFeatureParams && !isReimportMode && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-amber-600/90 backdrop-blur-md px-4 py-3 rounded-xl border border-amber-400/20 shadow-xl max-w-md animate-in slide-in-from-top-4 fade-in">
+          <div className="flex items-start gap-3">
+            <span className="text-xl flex-shrink-0">⚠️</span>
+            <div className="flex-1">
+              <div className="text-xs font-bold text-white mb-1">
+                Projected Face Edges May Be Outdated
+              </div>
+              <div className="text-[10px] text-white/90 mb-2">
+                This feature was created on a face. If you modified earlier features, the imported construction lines may not match the current geometry.
+              </div>
+              <button
+                onClick={onStartReimport}
+                className="bg-white/20 hover:bg-white/30 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all border border-white/20"
+              >
+                Update Face Projection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Reimport mode instructions */}
+      {isReimportMode && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-blue-600/90 backdrop-blur-md px-4 py-3 rounded-xl border border-blue-400/20 shadow-xl max-w-md animate-in slide-in-from-top-4 fade-in">
+          <div className="flex items-start gap-3">
+            <span className="text-xl flex-shrink-0">👆</span>
+            <div className="flex-1">
+              <div className="text-xs font-bold text-white mb-1">
+                Select Face to Re-import Edges
+              </div>
+              <div className="text-[10px] text-white/90 mb-2">
+                Click on a face to project its edges onto your sketch. The imported construction lines will be updated.
+              </div>
+              <button
+                onClick={onCancelReimport}
+                className="bg-white/20 hover:bg-white/30 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all border border-white/20"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Action Bar (When no config open) */}
       {!isConfigOpen && hasActiveSketch && (
@@ -123,8 +177,15 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
       {/* Config Panel (Extrude/Revolve) */}
       {isConfigOpen && (
         <div
-          className="absolute top-4 left-4 z-10 bg-[#1a1a1a]/95 backdrop-blur-xl p-5 rounded-2xl border border-white/10 shadow-2xl w-72 flex flex-col gap-4 animate-in slide-in-from-left-4"
-          onClick={(e) => e.stopPropagation()}
+          className={`absolute top-4 left-4 z-10 bg-[#1a1a1a]/95 backdrop-blur-xl p-5 rounded-2xl border border-white/10 shadow-2xl w-72 flex flex-col gap-4 animate-in slide-in-from-left-4 transition-opacity ${
+            isReimportMode ? 'opacity-50 pointer-events-none' : ''
+          }`}
+          onClick={(e) => {
+            // Don't stop propagation in reimport mode so clicks can reach the canvas
+            if (!isReimportMode) {
+              e.stopPropagation();
+            }
+          }}
         >
           <div className="flex items-center justify-between border-b border-white/5 pb-3">
             <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">

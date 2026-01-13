@@ -15,6 +15,7 @@ import ThreeView from "./components/ThreeView";
 import Sidebar from "./components/Sidebar";
 import Toolbar from "./components/Toolbar";
 import FloatingConstraints from "./components/FloatingConstraints";
+import { initReplicad } from "./services/replicad";
 
 const INITIAL_STATE: SketchState = {
   points: [],
@@ -147,6 +148,10 @@ const App: React.FC = () => {
   const [aiAdvice, setAiAdvice] = useState<string | null>(null);
   const [isSolving, setIsSolving] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    initReplicad().catch(console.error);
+  }, []);
 
   const [pendingValueConstraint, setPendingValueConstraint] = useState<{
     id?: string;
@@ -933,10 +938,13 @@ const App: React.FC = () => {
     revolveAngle?: number,
     revolveAxisId?: string
   ) => {
+    const now = Date.now();
+    const existingFeature = editingFeatureId ? features.find((f) => f.id === editingFeatureId) : null;
+    
     const newFeature: Feature = {
-      id: editingFeatureId || `f_${Date.now()}`,
+      id: editingFeatureId || `f_${now}`,
       name: editingFeatureId
-        ? features.find((f) => f.id === editingFeatureId)?.name ||
+        ? existingFeature?.name ||
           (operation === "CUT"
             ? "Cut"
             : featureType === "REVOLVE"
@@ -959,6 +967,8 @@ const App: React.FC = () => {
       transform: currentTransform || [
         1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
       ],
+      createdAt: existingFeature?.createdAt || now,
+      lastModified: now,
     };
 
     setFeatures((prev) => {
@@ -1033,6 +1043,96 @@ const App: React.FC = () => {
       circles: circles || [],
     });
     setViewMode("2D");
+  };
+  
+  const handleReimportFaceEdges = (
+    newLines: Line[],
+    newPoints: Point[],
+    transform: number[]
+  ) => {
+    // Update the current sketch state by:
+    // 1. Remove old projected lines and points
+    // 2. Match new projected points to old ones by proximity
+    // 3. Update positions while preserving IDs (so constraints remain valid)
+    // 4. Add any completely new projected geometry
+    
+    const oldProjPoints = state.points.filter(p => p.id.startsWith('p_proj_'));
+    const oldProjLines = state.lines.filter(l => l.id.startsWith('l_proj_'));
+    const nonProjPoints = state.points.filter(p => !p.id.startsWith('p_proj_'));
+    const nonProjLines = state.lines.filter(l => !l.id.startsWith('l_proj_'));
+    
+    // Match old projected points to new ones by proximity (within 10mm)
+    const updatedPoints: Point[] = [...nonProjPoints];
+    const unmatchedNewPoints: Point[] = [];
+    const newPointIdMap = new Map<string, string>(); // new ID -> old ID
+    
+    for (const newPoint of newPoints) {
+      let closestOld: Point | null = null;
+      let closestDist = Infinity;
+      
+      for (const oldPoint of oldProjPoints) {
+        const dist = Math.sqrt(
+          Math.pow(newPoint.x - oldPoint.x, 2) + 
+          Math.pow(newPoint.y - oldPoint.y, 2)
+        );
+        
+        if (dist < closestDist && dist < 10.0) { // 10mm threshold
+          closestDist = dist;
+          closestOld = oldPoint;
+        }
+      }
+      
+      if (closestOld) {
+        // Update the old point's position
+        updatedPoints.push({
+          ...closestOld,
+          x: newPoint.x,
+          y: newPoint.y,
+        });
+        newPointIdMap.set(newPoint.id, closestOld.id);
+      } else {
+        // This is a truly new point
+        unmatchedNewPoints.push(newPoint);
+      }
+    }
+    
+    // Add any unmatched new points
+    updatedPoints.push(...unmatchedNewPoints);
+    
+    // Update lines to use old point IDs where possible
+    const updatedLines: Line[] = [...nonProjLines];
+    for (const newLine of newLines) {
+      updatedLines.push({
+        ...newLine,
+        p1: newPointIdMap.get(newLine.p1) || newLine.p1,
+        p2: newPointIdMap.get(newLine.p2) || newLine.p2,
+      });
+    }
+    
+    // Update the state
+    saveToHistory();
+    setState(prev => ({
+      ...prev,
+      points: updatedPoints,
+      lines: updatedLines,
+    }));
+    
+    // Update the transform if it changed
+    setCurrentTransform(transform);
+    
+    // Update the feature's lastModified timestamp to dismiss the warning
+    if (editingFeatureId) {
+      const now = Date.now();
+      setFeatures((prev) =>
+        prev.map((f) =>
+          f.id === editingFeatureId
+            ? { ...f, lastModified: now }
+            : f
+        )
+      );
+    }
+    
+    console.log(`Re-imported face edges: matched ${newPointIdMap.size} points, added ${unmatchedNewPoints.length} new points`);
   };
 
   return (
@@ -1521,11 +1621,13 @@ const App: React.FC = () => {
                 <ThreeView
                   state={state}
                   features={features.filter((f) => f.id !== editingFeatureId)}
+                  allFeatures={features}
                   currentTransform={currentTransform}
                   initialFeatureParams={editingFeature}
                   onCommitExtrusion={handleCommitFeature}
                   onUpdateFeatureParams={handleUpdateFeatureParams}
                   onSketchOnFace={handleSketchOnFace}
+                  onReimportFaceEdges={handleReimportFaceEdges}
                   onClose={() => setViewMode("2D")}
                   onEditFeature={handleLoadFeature}
                 />

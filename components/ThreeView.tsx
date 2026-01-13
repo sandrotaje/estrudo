@@ -7,7 +7,6 @@ import React, {
 } from "react";
 import * as THREE from "three";
 import { STLExporter } from "three/addons/exporters/STLExporter.js";
-import type { Brush } from "three-bvh-csg";
 import { SketchState, Feature, Line, Arc, Circle, Point } from "../types";
 import {
   generateGeometryForFeature,
@@ -25,27 +24,31 @@ import { useSketchVisualization } from "./ThreeView/useSketchVisualization";
 import { useAxisVisualization } from "./ThreeView/useAxisVisualization";
 import { usePreviewMesh } from "./ThreeView/usePreviewMesh";
 import { useFaceHighlight } from "./ThreeView/useFaceHighlight";
+import { shouldShowProjectionWarning } from "../utils/projectionUtils";
 
 interface ThreeViewProps {
-  state: SketchState;
+  state: AppState;
   features?: Feature[];
-  currentTransform?: number[]; // Matrix4 array for current sketch plane
-  initialFeatureParams?: Feature;
+  allFeatures?: Feature[];
+  currentTransform: THREE.Matrix4 | null;
+  initialFeatureParams?: InitialFeatureParams;
   onCommitExtrusion: (
-    depth: number,
-    operation: "NEW" | "CUT",
-    throughAll: boolean,
-    featureType: "EXTRUDE" | "REVOLVE",
-    revolveAngle?: number,
-    revolveAxisId?: string
+    params: Omit<FeatureParams, "id">,
+    sketch?: ConstrainedSketch,
+    attachedToFaceIndex?: number
   ) => void;
-  onUpdateFeatureParams?: (id: string, updates: Partial<Feature>) => void;
+  onUpdateFeatureParams?: (featureId: string, params: FeatureParams) => void;
   onSketchOnFace?: (
-    lines: Line[],
-    points: Point[],
-    transform: number[],
-    arcs: Arc[],
-    circles: Circle[]
+    faceIndex: number,
+    shapePath: THREE.ShapePath,
+    featureId: string,
+    face: any
+  ) => void;
+  onReimportFaceEdges?: (
+    projectedElements: {
+      points: { id: string; x: number; y: number }[];
+      lines: { id: string; start: string; end: string }[];
+    }
   ) => void;
   onClose: () => void;
   onEditFeature?: (id: string) => void;
@@ -54,11 +57,13 @@ interface ThreeViewProps {
 const ThreeView: React.FC<ThreeViewProps> = ({
   state,
   features = [],
+  allFeatures = [],
   currentTransform,
   initialFeatureParams,
   onCommitExtrusion,
   onUpdateFeatureParams,
   onSketchOnFace,
+  onReimportFaceEdges,
   onClose,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -94,6 +99,9 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const [hoveredSketchElement, setHoveredSketchElement] = useState<
     string | null
   >(null);
+  
+  // Re-import mode for updating projected face edges
+  const [isReimportMode, setIsReimportMode] = useState(false);
 
   const [selectedFaceData, setSelectedFaceData] = useState<{
     point: THREE.Vector3;
@@ -116,8 +124,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
   const requestRef = useRef<number>(0);
 
-  // Cache for feature brushes to avoid rebuilding BVH for unchanged features
-  const brushCache = useRef<WeakMap<Feature, Brush>>(new WeakMap());
+  // Cache for feature shapes to avoid rebuilding for unchanged features
+  const brushCache = useRef<WeakMap<Feature, any>>(new WeakMap());
 
   // Auto-Center Camera Logic
   const fitView = useCallback(() => {
@@ -409,115 +417,17 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     setSelectedSketchElements([]);
     return true;
   }, []);
-
-  const onCanvasMouseMove = useCallback(
-    (event: React.MouseEvent) => {
-      if (isConfigOpen || !sketchVisGroupRef.current) return;
-      if (!setRayFromEvent(event)) return;
-
-      raycasterRef.current.params.Line.threshold = 3.0; // Increased threshold for easier hover
-
-      const intersects = raycasterRef.current.intersectObjects(
-        sketchVisGroupRef.current.children,
-        true
-      );
-
-      if (intersects.length > 0) {
-        const id = intersects[0].object.userData.sketchId;
-        if (id) {
-          if (hoveredSketchElement !== id) setHoveredSketchElement(id);
-          return;
-        }
-      }
-      if (hoveredSketchElement !== null) setHoveredSketchElement(null);
-    },
-    [hoveredSketchElement, isConfigOpen, setRayFromEvent]
-  );
-
-  const onCanvasClick = useCallback(
-    (event: React.MouseEvent) => {
-      if (
-        !meshGroupRef.current ||
-        !historyGroupRef.current ||
-        !sketchVisGroupRef.current ||
-        !cameraRef.current
-      )
-        return;
-      if (isConfigOpen) return; // Don't pick if config is open
-
-      if (!setRayFromEvent(event)) return;
-
-      // 1. Check for Sketch Elements
-      const sketchId = tryPickSketchElement();
-      if (sketchId) {
-        setSelectedSketchElements((prev) => {
-          if (prev.includes(sketchId))
-            return prev.filter((id) => id !== sketchId);
-          return [...prev, sketchId];
-        });
-        setSelectedFaceData(null);
-        return;
-      }
-
-      // 2. Check for Solid Faces
-      const objectsToCheck = [...historyGroupRef.current.children];
-      const didPickFace = tryPickFace(objectsToCheck);
-      if (!didPickFace) {
-        setSelectedFaceData(null);
-        setSelectedSketchElements([]);
-      }
-    },
-    [isConfigOpen, setRayFromEvent, tryPickFace, tryPickSketchElement]
-  );
-
-  const handleExportSTL = () => {
-    const exporter = new STLExporter();
-    const result = exporter.parse(historyGroupRef.current!, { binary: true });
-    const blob = new Blob([result], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "model.stl";
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleCommit = () => {
-    if (!errorMsg) {
-      onCommitExtrusion(
-        localDepth,
-        operation,
-        throughAll,
-        featureType,
-        revolveAngle,
-        activeAxisId || undefined
-      );
-      setIsConfigOpen(false); // Close config after commit
-      setSelectedSketchElements([]); // Clear selection after commit
-    }
-  };
-
-  // Helper to switch back to 2D but keep the session alive by updating params first
-  const handleEditSketch = () => {
-    if (initialFeatureParams?.id && onUpdateFeatureParams) {
-      onUpdateFeatureParams(initialFeatureParams.id, {
-        featureType,
-        extrusionDepth: localDepth,
-        revolveAngle,
-        operation,
-        throughAll,
-        revolveAxisId: activeAxisId || undefined,
-      });
-    }
-    onClose();
-  };
-
-  const handleCreateSketchOnFace = () => {
-    if (!selectedFaceData || !onSketchOnFace) return;
-    const { boundaryEdges, normal, matrixWorld } = selectedFaceData;
+  
+  // Face projection helper function
+  const projectFaceEdges = useCallback((faceData: {
+    boundaryEdges: THREE.Line3[];
+    normal: THREE.Vector3;
+    matrixWorld: THREE.Matrix4;
+  }) => {
+    const { boundaryEdges, normal, matrixWorld } = faceData;
     if (boundaryEdges.length === 0) {
       alert("Could not detect face boundary.");
-      return;
+      throw new Error("No boundary edges");
     }
     const edge = boundaryEdges[0];
     const originLocal = edge.start.clone();
@@ -579,6 +489,147 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         construction: true,
       });
     });
+    return { projectedLines, projectedPoints, localToWorld };
+  }, []);
+  
+  const handleReimportFaceEdges = useCallback((faceData: {
+    point: THREE.Vector3;
+    normal: THREE.Vector3;
+    boundaryEdges: THREE.Line3[];
+    faceVertices: Float32Array;
+    matrixWorld: THREE.Matrix4;
+  }) => {
+    if (!onReimportFaceEdges) return;
+    const { projectedLines, projectedPoints, localToWorld } = projectFaceEdges(faceData);
+    onReimportFaceEdges(
+      projectedLines,
+      projectedPoints,
+      localToWorld.toArray()
+    );
+    setIsReimportMode(false);
+    setSelectedFaceData(null);
+  }, [onReimportFaceEdges, projectFaceEdges]);
+
+  const onCanvasMouseMove = useCallback(
+    (event: React.MouseEvent) => {
+      if (isConfigOpen || !sketchVisGroupRef.current) return;
+      if (!setRayFromEvent(event)) return;
+
+      raycasterRef.current.params.Line.threshold = 3.0; // Increased threshold for easier hover
+
+      const intersects = raycasterRef.current.intersectObjects(
+        sketchVisGroupRef.current.children,
+        true
+      );
+
+      if (intersects.length > 0) {
+        const id = intersects[0].object.userData.sketchId;
+        if (id) {
+          if (hoveredSketchElement !== id) setHoveredSketchElement(id);
+          return;
+        }
+      }
+      if (hoveredSketchElement !== null) setHoveredSketchElement(null);
+    },
+    [hoveredSketchElement, isConfigOpen, setRayFromEvent]
+  );
+
+  const onCanvasClick = useCallback(
+    (event: React.MouseEvent) => {
+      if (
+        !meshGroupRef.current ||
+        !historyGroupRef.current ||
+        !sketchVisGroupRef.current ||
+        !cameraRef.current
+      )
+        return;
+      
+      // Allow clicks in reimport mode even if config is open
+      if (isConfigOpen && !isReimportMode) return;
+
+      if (!setRayFromEvent(event)) return;
+
+      // If in reimport mode, only allow face picking
+      if (isReimportMode) {
+        const objectsToCheck = [...historyGroupRef.current.children];
+        raycasterRef.current.params.Line.threshold = 0.1;
+        const face = pickFaceData(raycasterRef.current, objectsToCheck);
+        if (face) {
+          // Face selected, trigger reimport immediately with the face data
+          handleReimportFaceEdges(face);
+          setSelectedFaceData(face);
+        }
+        return;
+      }
+
+      // 1. Check for Sketch Elements
+      const sketchId = tryPickSketchElement();
+      if (sketchId) {
+        setSelectedSketchElements((prev) => {
+          if (prev.includes(sketchId))
+            return prev.filter((id) => id !== sketchId);
+          return [...prev, sketchId];
+        });
+        setSelectedFaceData(null);
+        return;
+      }
+
+      // 2. Check for Solid Faces
+      const objectsToCheck = [...historyGroupRef.current.children];
+      const didPickFace = tryPickFace(objectsToCheck);
+      if (!didPickFace) {
+        setSelectedFaceData(null);
+        setSelectedSketchElements([]);
+      }
+    },
+    [isConfigOpen, isReimportMode, setRayFromEvent, tryPickFace, tryPickSketchElement, handleReimportFaceEdges]
+  );
+
+  const handleExportSTL = () => {
+    const exporter = new STLExporter();
+    const result = exporter.parse(historyGroupRef.current!, { binary: true });
+    const blob = new Blob([result], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "model.stl";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCommit = () => {
+    if (!errorMsg) {
+      onCommitExtrusion(
+        localDepth,
+        operation,
+        throughAll,
+        featureType,
+        revolveAngle,
+        activeAxisId || undefined
+      );
+      setIsConfigOpen(false); // Close config after commit
+      setSelectedSketchElements([]); // Clear selection after commit
+    }
+  };
+
+  // Helper to switch back to 2D but keep the session alive by updating params first
+  const handleEditSketch = () => {
+    if (initialFeatureParams?.id && onUpdateFeatureParams) {
+      onUpdateFeatureParams(initialFeatureParams.id, {
+        featureType,
+        extrusionDepth: localDepth,
+        revolveAngle,
+        operation,
+        throughAll,
+        revolveAxisId: activeAxisId || undefined,
+      });
+    }
+    onClose();
+  };
+
+  const handleCreateSketchOnFace = () => {
+    if (!selectedFaceData || !onSketchOnFace) return;
+    const { projectedLines, projectedPoints, localToWorld } = projectFaceEdges(selectedFaceData);
     onSketchOnFace(
       projectedLines,
       projectedPoints,
@@ -589,6 +640,11 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   };
 
   const hasActiveSketch = state.lines.length > 0 || state.circles.length > 0;
+  
+  // Determine if warning should be shown
+  const showProjectionWarning = initialFeatureParams && allFeatures.length > 0
+    ? shouldShowProjectionWarning(initialFeatureParams, allFeatures)
+    : false;
 
   return (
     <div
@@ -615,6 +671,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         initialFeatureParams={initialFeatureParams}
         errorMsg={errorMsg}
         selectedFaceData={selectedFaceData}
+        showProjectionWarning={showProjectionWarning}
+        isReimportMode={isReimportMode}
         onFitView={fitView}
         onExportSTL={handleExportSTL}
         onSetFeatureType={setFeatureType}
@@ -627,6 +685,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onCommit={handleCommit}
         onEditSketch={handleEditSketch}
         onCreateSketchOnFace={handleCreateSketchOnFace}
+        onStartReimport={() => setIsReimportMode(true)}
+        onCancelReimport={() => setIsReimportMode(false)}
       />
     </div>
   );
