@@ -1048,7 +1048,9 @@ const App: React.FC = () => {
   const handleReimportFaceEdges = (
     newLines: Line[],
     newPoints: Point[],
-    transform: number[]
+    transform: number[],
+    newCircles?: Circle[],
+    newArcs?: Arc[]
   ) => {
     // Update the current sketch state by:
     // 1. Remove old projected lines and points
@@ -1058,8 +1060,12 @@ const App: React.FC = () => {
     
     const oldProjPoints = state.points.filter(p => p.id.startsWith('p_proj_'));
     const oldProjLines = state.lines.filter(l => l.id.startsWith('l_proj_'));
+    const oldProjCircles = state.circles.filter(c => c.id.startsWith('c_proj_'));
+    const oldProjArcs = state.arcs.filter(a => a.id.startsWith('a_proj_'));
     const nonProjPoints = state.points.filter(p => !p.id.startsWith('p_proj_'));
     const nonProjLines = state.lines.filter(l => !l.id.startsWith('l_proj_'));
+    const nonProjCircles = state.circles.filter(c => !c.id.startsWith('c_proj_'));
+    const nonProjArcs = state.arcs.filter(a => !a.id.startsWith('a_proj_'));
     
     // Match old projected points to new ones by proximity (within 10mm)
     const updatedPoints: Point[] = [...nonProjPoints];
@@ -1109,12 +1115,112 @@ const App: React.FC = () => {
       });
     }
     
+    // Handle circles - match by proximity of centers and similar radii
+    const updatedCircles: Circle[] = [...nonProjCircles];
+    const circleIdMap = new Map<string, string>(); // new ID -> old ID
+    
+    if (newCircles) {
+      for (const newCircle of newCircles) {
+        let closestOld: Circle | null = null;
+        let closestDist = Infinity;
+        
+        // Get the center point coordinates
+        const newCenterPoint = updatedPoints.find(p => p.id === (newPointIdMap.get(newCircle.center) || newCircle.center));
+        if (!newCenterPoint) continue;
+        
+        for (const oldCircle of oldProjCircles) {
+          const oldCenterPoint = oldProjPoints.find(p => p.id === oldCircle.center);
+          if (!oldCenterPoint) continue;
+          
+          const centerDist = Math.sqrt(
+            Math.pow(newCenterPoint.x - oldCenterPoint.x, 2) + 
+            Math.pow(newCenterPoint.y - oldCenterPoint.y, 2)
+          );
+          const radiusDiff = Math.abs(newCircle.radius - oldCircle.radius);
+          
+          // Match if center is within 10mm and radius within 1mm
+          if (centerDist < 10.0 && radiusDiff < 1.0 && centerDist < closestDist) {
+            closestDist = centerDist;
+            closestOld = oldCircle;
+          }
+        }
+        
+        if (closestOld) {
+          // Update the old circle with new properties
+          updatedCircles.push({
+            ...closestOld,
+            center: newPointIdMap.get(newCircle.center) || newCircle.center,
+            radius: newCircle.radius,
+          });
+          circleIdMap.set(newCircle.id, closestOld.id);
+        } else {
+          // Add as new circle
+          updatedCircles.push({
+            ...newCircle,
+            center: newPointIdMap.get(newCircle.center) || newCircle.center,
+          });
+        }
+      }
+    }
+    
+    // Handle arcs - match by proximity of centers and similar radii
+    const updatedArcs: Arc[] = [...nonProjArcs];
+    
+    if (newArcs) {
+      for (const newArc of newArcs) {
+        let closestOld: Arc | null = null;
+        let closestDist = Infinity;
+        
+        // Get the center point coordinates
+        const newCenterPoint = updatedPoints.find(p => p.id === (newPointIdMap.get(newArc.center) || newArc.center));
+        if (!newCenterPoint) continue;
+        
+        for (const oldArc of oldProjArcs) {
+          const oldCenterPoint = oldProjPoints.find(p => p.id === oldArc.center);
+          if (!oldCenterPoint) continue;
+          
+          const centerDist = Math.sqrt(
+            Math.pow(newCenterPoint.x - oldCenterPoint.x, 2) + 
+            Math.pow(newCenterPoint.y - oldCenterPoint.y, 2)
+          );
+          const radiusDiff = Math.abs(newArc.radius - oldArc.radius);
+          
+          // Match if center is within 10mm and radius within 1mm
+          if (centerDist < 10.0 && radiusDiff < 1.0 && centerDist < closestDist) {
+            closestDist = centerDist;
+            closestOld = oldArc;
+          }
+        }
+        
+        if (closestOld) {
+          // Update the old arc with new properties
+          updatedArcs.push({
+            ...closestOld,
+            center: newPointIdMap.get(newArc.center) || newArc.center,
+            radius: newArc.radius,
+            p1: newPointIdMap.get(newArc.p1) || newArc.p1,
+            p2: newPointIdMap.get(newArc.p2) || newArc.p2,
+          });
+        } else {
+          // Add as new arc
+          updatedArcs.push({
+            ...newArc,
+            center: newPointIdMap.get(newArc.center) || newArc.center,
+            p1: newPointIdMap.get(newArc.p1) || newArc.p1,
+            p2: newPointIdMap.get(newArc.p2) || newArc.p2,
+          });
+        }
+      }
+    }
+    
     // Update the state
     saveToHistory();
     setState(prev => ({
       ...prev,
       points: updatedPoints,
       lines: updatedLines,
+      circles: updatedCircles,
+      arcs: updatedArcs,
     }));
     
     // Update the transform if it changed
@@ -1132,7 +1238,7 @@ const App: React.FC = () => {
       );
     }
     
-    console.log(`Re-imported face edges: matched ${newPointIdMap.size} points, added ${unmatchedNewPoints.length} new points`);
+    console.log(`Re-imported face edges: matched ${newPointIdMap.size} points, added ${unmatchedNewPoints.length} new points, ${(newCircles || []).length} circles, ${(newArcs || []).length} arcs`);
   };
 
   return (

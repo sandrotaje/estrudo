@@ -25,6 +25,7 @@ import { useAxisVisualization } from "./ThreeView/useAxisVisualization";
 import { usePreviewMesh } from "./ThreeView/usePreviewMesh";
 import { useFaceHighlight } from "./ThreeView/useFaceHighlight";
 import { shouldShowProjectionWarning } from "../utils/projectionUtils";
+import { groupConnectedEdges, detectCircularSequence } from "../utils/circleDetection";
 
 interface ThreeViewProps {
   state: AppState;
@@ -39,16 +40,18 @@ interface ThreeViewProps {
   ) => void;
   onUpdateFeatureParams?: (featureId: string, params: FeatureParams) => void;
   onSketchOnFace?: (
-    faceIndex: number,
-    shapePath: THREE.ShapePath,
-    featureId: string,
-    face: any
+    lines: Line[],
+    points: Point[],
+    transform: number[],
+    arcs: Arc[],
+    circles: Circle[]
   ) => void;
   onReimportFaceEdges?: (
-    projectedElements: {
-      points: { id: string; x: number; y: number }[];
-      lines: { id: string; start: string; end: string }[];
-    }
+    newLines: Line[],
+    newPoints: Point[],
+    transform: number[],
+    newCircles?: Circle[],
+    newArcs?: Arc[]
   ) => void;
   onClose: () => void;
   onEditFeature?: (id: string) => void;
@@ -451,37 +454,94 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     const localToWorld = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
     localToWorld.setPosition(originWorld);
     const worldToLocal = localToWorld.clone().invert();
-    const projectedPoints: Point[] = [];
-    const projectedLines: Line[] = [];
-    const findPoint = (x: number, y: number) =>
-      projectedPoints.find(
-        (p) => Math.abs(p.x - x) < 0.001 && Math.abs(p.y - y) < 0.001
-      );
-    boundaryEdges.forEach((edge) => {
+    
+    // Transform edges to sketch coordinate system
+    const edgesInSketchSpace = boundaryEdges.map((edge) => {
       const startWorld = edge.start.clone().applyMatrix4(matrixWorld);
       const endWorld = edge.end.clone().applyMatrix4(matrixWorld);
       const startSketch = startWorld.applyMatrix4(worldToLocal);
       const endSketch = endWorld.applyMatrix4(worldToLocal);
-      let p1 = findPoint(startSketch.x, startSketch.y);
-      if (!p1) {
-        p1 = {
+      return new THREE.Line3(startSketch, endSketch);
+    });
+
+    const projectedPoints: Point[] = [];
+    const projectedLines: Line[] = [];
+    const projectedCircles: Circle[] = [];
+    const projectedArcs: Arc[] = [];
+    
+    const findPoint = (x: number, y: number) =>
+      projectedPoints.find(
+        (p) => Math.abs(p.x - x) < 0.001 && Math.abs(p.y - y) < 0.001
+      );
+    
+    const getOrCreatePoint = (x: number, y: number): Point => {
+      let p = findPoint(x, y);
+      if (!p) {
+        p = {
           id: `p_proj_${Math.random().toString(36).substr(2, 9)}`,
-          x: startSketch.x,
-          y: startSketch.y,
+          x,
+          y,
           fixed: true,
         };
-        projectedPoints.push(p1);
+        projectedPoints.push(p);
       }
-      let p2 = findPoint(endSketch.x, endSketch.y);
-      if (!p2) {
-        p2 = {
-          id: `p_proj_${Math.random().toString(36).substr(2, 9)}`,
-          x: endSketch.x,
-          y: endSketch.y,
-          fixed: true,
-        };
-        projectedPoints.push(p2);
+      return p;
+    };
+
+    // Group edges and detect circles/arcs
+    const edgeGroups = groupConnectedEdges(edgesInSketchSpace);
+    const usedEdges = new Set<THREE.Line3>();
+
+    for (const group of edgeGroups) {
+      const detection = detectCircularSequence(group);
+      
+      if (detection && detection.rmsError <= 0.1) {
+        // Found a circle or arc!
+        const centerPoint = getOrCreatePoint(detection.center.x, detection.center.y);
+        
+        if (detection.isFullCircle) {
+          // Create a construction circle
+          const circle = {
+            id: `c_proj_${Math.random().toString(36).substr(2, 9)}`,
+            center: centerPoint.id,
+            radius: detection.radius,
+            construction: true,
+          };
+          projectedCircles.push(circle);
+        } else if (detection.startAngle !== undefined && detection.endAngle !== undefined) {
+          // Create a construction arc
+          // Calculate start and end points on the arc
+          const startX = detection.center.x + detection.radius * Math.cos(detection.startAngle);
+          const startY = detection.center.y + detection.radius * Math.sin(detection.startAngle);
+          const endX = detection.center.x + detection.radius * Math.cos(detection.endAngle);
+          const endY = detection.center.y + detection.radius * Math.sin(detection.endAngle);
+          
+          const p1 = getOrCreatePoint(startX, startY);
+          const p2 = getOrCreatePoint(endX, endY);
+          
+          const arc = {
+            id: `a_proj_${Math.random().toString(36).substr(2, 9)}`,
+            center: centerPoint.id,
+            radius: detection.radius,
+            p1: p1.id,
+            p2: p2.id,
+            construction: true,
+          };
+          projectedArcs.push(arc);
+        }
+        
+        // Mark these edges as used (don't create line segments for them)
+        group.forEach(edge => usedEdges.add(edge));
       }
+    }
+
+    // Create line segments for edges that weren't detected as circles/arcs
+    edgesInSketchSpace.forEach((edge) => {
+      if (usedEdges.has(edge)) return; // Skip edges that are part of circles/arcs
+      
+      const p1 = getOrCreatePoint(edge.start.x, edge.start.y);
+      const p2 = getOrCreatePoint(edge.end.x, edge.end.y);
+      
       projectedLines.push({
         id: `l_proj_${Math.random().toString(36).substr(2, 9)}`,
         p1: p1.id,
@@ -489,7 +549,14 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         construction: true,
       });
     });
-    return { projectedLines, projectedPoints, localToWorld };
+    
+    return { 
+      projectedLines, 
+      projectedPoints, 
+      projectedCircles, 
+      projectedArcs, 
+      localToWorld 
+    };
   }, []);
   
   const handleReimportFaceEdges = useCallback((faceData: {
@@ -500,11 +567,13 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     matrixWorld: THREE.Matrix4;
   }) => {
     if (!onReimportFaceEdges) return;
-    const { projectedLines, projectedPoints, localToWorld } = projectFaceEdges(faceData);
+    const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(faceData);
     onReimportFaceEdges(
       projectedLines,
       projectedPoints,
-      localToWorld.toArray()
+      localToWorld.toArray(),
+      projectedCircles,
+      projectedArcs
     );
     setIsReimportMode(false);
     setSelectedFaceData(null);
@@ -629,13 +698,13 @@ const ThreeView: React.FC<ThreeViewProps> = ({
 
   const handleCreateSketchOnFace = () => {
     if (!selectedFaceData || !onSketchOnFace) return;
-    const { projectedLines, projectedPoints, localToWorld } = projectFaceEdges(selectedFaceData);
+    const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(selectedFaceData);
     onSketchOnFace(
       projectedLines,
       projectedPoints,
       localToWorld.toArray(),
-      [],
-      []
+      projectedArcs || [],
+      projectedCircles || []
     );
   };
 
