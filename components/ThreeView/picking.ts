@@ -128,5 +128,6 @@ export const pickFaceData = (
     boundaryEdges: faceData.boundary,
     faceVertices: faceData.vertices,
     matrixWorld: mesh.matrixWorld,
+    featureId: mesh.userData.featureId // Pass through the feature ID
   };
 };

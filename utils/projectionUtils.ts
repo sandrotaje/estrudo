@@ -23,7 +23,8 @@ export function countProjectedElements(sketch: SketchState): { points: number; l
  * Determines if a feature should show a warning about outdated projected lines.
  * A warning is shown if:
  * 1. The feature has projected geometry (imported face edges)
- * 2. At least one feature created before it has been modified after this feature was last modified
+ * 2. It explicitly depends on a parent feature (via parentFeatureId)
+ * 3. That parent feature has been modified after this feature's projection was last updated
  */
 export function shouldShowProjectionWarning(feature: Feature, allFeatures: Feature[]): boolean {
   // Must have projected geometry
@@ -31,7 +32,21 @@ export function shouldShowProjectionWarning(feature: Feature, allFeatures: Featu
     return false;
   }
   
-  // Check if any earlier feature was modified after this feature was last modified
+  // If we have explicit parent tracking, check that specific parent
+  if (feature.parentFeatureId) {
+    const parent = allFeatures.find(f => f.id === feature.parentFeatureId);
+    if (!parent) {
+      // Parent deleted? That's definitely a warning state (or "orphaned")
+      return true; 
+    }
+    
+    // Compare parent modification time to this feature's PROJECTION update time
+    // If projectionLastUpdated is missing, fallback to feature.lastModified
+    const lastUpdate = feature.projectionLastUpdated || feature.lastModified;
+    return parent.lastModified > lastUpdate;
+  }
+
+  // Fallback behavior for legacy features: Check if *any* earlier feature changed
   const featureIndex = allFeatures.findIndex(f => f.id === feature.id);
   if (featureIndex === -1) return false;
   

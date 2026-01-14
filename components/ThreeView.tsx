@@ -46,7 +46,9 @@ interface ThreeViewProps {
     points: Point[],
     transform: number[],
     arcs: Arc[],
-    circles: Circle[]
+    circles: Circle[],
+    parentFeatureId?: string,
+    faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
   ) => void;
   onReimportFaceEdges?: (
     newLines: Line[],
@@ -57,6 +59,8 @@ interface ThreeViewProps {
   ) => void;
   onClose: () => void;
   onEditFeature?: (id: string) => void;
+  onFeatureShapesReady?: (shapesByFeatureId: Map<string, any>) => void;
+  onBuildComplete?: () => void;
 }
 
 const ThreeView: React.FC<ThreeViewProps> = ({
@@ -70,6 +74,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   onSketchOnFace,
   onReimportFaceEdges,
   onClose,
+  onFeatureShapesReady,
+  onBuildComplete,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +106,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   );
 
   const lastResultShapeRef = useRef<any>(null);
+  const featureShapesMapRef = useRef<Map<string, any>>(new Map());
 
   // Selection & Interaction State
   const [selectedSketchElements, setSelectedSketchElements] = useState<
@@ -118,6 +125,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     boundaryEdges: THREE.Line3[];
     faceVertices: Float32Array;
     matrixWorld: THREE.Matrix4;
+    featureId?: string;
   } | null>(null);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -134,7 +142,10 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const requestRef = useRef<number>(0);
 
   // Cache for feature shapes to avoid rebuilding for unchanged features
-  const brushCache = useRef<WeakMap<Feature, any>>(new WeakMap());
+  const brushCache = useRef<Map<string, {
+    shape: any;
+    signature: string;
+  }>>(new Map());
 
   // Auto-Center Camera Logic
   const fitView = useCallback(() => {
@@ -268,6 +279,11 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     onLastResultShapeReady: (shape) => {
       lastResultShapeRef.current = shape;
     },
+    onFeatureShapesReady: (shapes) => {
+      featureShapesMapRef.current = shapes;
+      if (onFeatureShapesReady) onFeatureShapesReady(shapes);
+    },
+    onBuildComplete,
   });
 
   useSketchVisualization({
@@ -588,24 +604,57 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   }, []);
   
   const handleReimportFaceEdges = useCallback((faceData: {
-    point: THREE.Vector3;
-    normal: THREE.Vector3;
     boundaryEdges: THREE.Line3[];
-    faceVertices: Float32Array;
+    normal: THREE.Vector3;
     matrixWorld: THREE.Matrix4;
+    point?: THREE.Vector3; // Make optional to satisfy type check, though pickFaceData always provides it
   }) => {
-    if (!onReimportFaceEdges) return;
+    // Re-project the edges from the newly selected face
     const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(faceData);
+    
+    // Pass everything back to App.tsx to update the sketch state
+    if (!onReimportFaceEdges) return;
+    
+    // We update the projectionLastUpdated timestamp implicitly in App.tsx when it saves this
     onReimportFaceEdges(
       projectedLines,
       projectedPoints,
       localToWorld.toArray(),
-      projectedCircles,
-      projectedArcs
+      projectedCircles || [],
+      projectedArcs || []
     );
+    
+    // If we are editing an existing feature, we should also update its parent link
+    // so it points to the new face we just picked
+    if (initialFeatureParams && onUpdateFeatureParams && selectedFaceData?.featureId && faceData.point) {
+         // Try to find the Replicad face index
+         let faceIndex: number | undefined;
+         if (selectedFaceData.featureId && featureShapesMapRef.current.has(selectedFaceData.featureId)) {
+           const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
+           try {
+             const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
+             faceIndex = findReplicadFaceIndex(parentShape, faceData.point, faceData.normal);
+           } catch (e) {
+             console.warn("Could not find face index during reimport:", e);
+           }
+         }
+         
+         // Also update the robust face descriptor
+         const faceDescriptor = {
+            point: faceData.point.toArray() as [number, number, number],
+            normal: faceData.normal.toArray() as [number, number, number],
+            faceIndex
+         };
+         
+         onUpdateFeatureParams(initialFeatureParams.id, {
+             parentFeatureId: selectedFaceData.featureId,
+             faceSelectionData: faceDescriptor,
+             projectionLastUpdated: Date.now() // Mark projection as fresh
+         });
+    }
+
     setIsReimportMode(false);
-    setSelectedFaceData(null);
-  }, [onReimportFaceEdges, projectFaceEdges]);
+  }, [onReimportFaceEdges, projectFaceEdges, selectedFaceData, initialFeatureParams, onUpdateFeatureParams]);
 
   const onCanvasMouseMove = useCallback(
     (event: React.MouseEvent) => {
@@ -749,12 +798,49 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const handleCreateSketchOnFace = () => {
     if (!selectedFaceData || !onSketchOnFace) return;
     const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(selectedFaceData);
+    
+    // Try to find the Replicad face index if we have the parent shape
+    let faceIndex: number | undefined;
+    if (selectedFaceData.featureId && featureShapesMapRef.current.has(selectedFaceData.featureId)) {
+      const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
+      
+      // Import and use the face index matching utility
+      import('../utils/faceIndexMatching').then(({ findReplicadFaceIndex }) => {
+        const matchedIndex = findReplicadFaceIndex(
+          parentShape,
+          selectedFaceData.point,
+          selectedFaceData.normal
+        );
+        
+        if (matchedIndex !== undefined) {
+          console.log(`Matched face to Replicad index: ${matchedIndex}`);
+        }
+      }).catch(console.error);
+      
+      // For now, do synchronous version - we'll refactor if needed
+      try {
+        const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
+        faceIndex = findReplicadFaceIndex(parentShape, selectedFaceData.point, selectedFaceData.normal);
+      } catch (e) {
+        console.warn("Could not find face index:", e);
+      }
+    }
+    
+    // Extract robust face descriptor
+    const faceDescriptor = {
+      point: selectedFaceData.point.toArray() as [number, number, number],
+      normal: selectedFaceData.normal.toArray() as [number, number, number],
+      faceIndex
+    };
+
     onSketchOnFace(
       projectedLines,
       projectedPoints,
       localToWorld.toArray(),
       projectedArcs || [],
-      projectedCircles || []
+      projectedCircles || [],
+      selectedFaceData.featureId, // Now we have the parent feature ID!
+      faceDescriptor
     );
   };
 

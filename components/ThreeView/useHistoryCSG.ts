@@ -11,10 +11,15 @@ import { revolution } from "replicad";
 type UseHistoryCSGParams = {
   features: Feature[];
   historyGroupRef: MutableRefObject<THREE.Group | null>;
-  brushCache: MutableRefObject<WeakMap<Feature, any>>; // Now stores Replicad Shapes
+  brushCache: MutableRefObject<Map<string, {
+    shape: any;
+    signature: string;
+  }>>;
   activeAxisId: string | null;
   fitView: () => void;
   onLastResultShapeReady?: (shape: any) => void;
+  onFeatureShapesReady?: (shapesByFeatureId: Map<string, any>) => void;
+  onBuildComplete?: () => void;
 };
 
 export const useHistoryCSG = ({
@@ -24,6 +29,8 @@ export const useHistoryCSG = ({
   activeAxisId,
   fitView,
   onLastResultShapeReady,
+  onFeatureShapesReady,
+  onBuildComplete,
 }: UseHistoryCSGParams) => {
   useEffect(() => {
     let active = true;
@@ -51,11 +58,44 @@ export const useHistoryCSG = ({
         side: THREE.DoubleSide,
       });
 
-      for (const feature of features) {
-        let featureShape = brushCache.current.get(feature);
+      // Track if any upstream feature was rebuilt, forcing later features to rebuild
+      let upstreamDirty = false;
+      
+      // Track all individual feature shapes (before booleans) for face extraction
+      const featureShapesMap = new Map<string, any>();
 
-        if (!featureShape) {
-          console.log(`Creating Replicad profiles for feature ${feature.name}`);
+      for (const feature of features) {
+        // Generate a signature for the feature to detect changes
+        const signature = JSON.stringify({
+          id: feature.id,
+          featureType: feature.featureType,
+          operation: feature.operation,
+          extrusionDepth: feature.extrusionDepth,
+          revolveAngle: feature.revolveAngle,
+          revolveAxisId: feature.revolveAxisId,
+          transform: feature.transform,
+          lastModified: feature.lastModified,
+          // Light-weight sketch signature
+          sketch: {
+            points: feature.sketch.points.length,
+            lines: feature.sketch.lines.length,
+            circles: feature.sketch.circles.length,
+            arcs: feature.sketch.arcs?.length || 0,
+            constraints: feature.sketch.constraints.length,
+          }
+        });
+
+        const cached = brushCache.current.get(feature.id);
+        let featureShape: any;
+
+        if (cached && cached.signature === signature && !upstreamDirty) {
+          // Cache hit and safe to reuse
+          featureShape = cached.shape;
+          // console.log(`Cache hit for feature ${feature.name}`);
+        } else {
+          // Cache miss or forced rebuild
+          console.log(`Rebuilding feature ${feature.name} (dirty=${upstreamDirty}, reason=${!cached ? 'no-cache' : cached.signature !== signature ? 'signature-mismatch' : 'upstream-change'})`);
+          
           const drawings = createReplicadProfiles(feature.sketch, {
             axisLineId: activeAxisId,
           });
@@ -261,7 +301,14 @@ export const useHistoryCSG = ({
             });
           }
           
-          brushCache.current.set(feature, featureShape);
+          // Update cache
+          brushCache.current.set(feature.id, { shape: featureShape, signature });
+          upstreamDirty = true; // Mark downstream as dirty
+        }
+        
+        // Store this feature's shape for later face extraction
+        if (featureShape) {
+          featureShapesMap.set(feature.id, featureShape);
         }
 
         if (featureShape) {
@@ -307,6 +354,8 @@ export const useHistoryCSG = ({
 
       if (resultShape && active) {
         if (onLastResultShapeReady) onLastResultShapeReady(resultShape);
+        if (onFeatureShapesReady) onFeatureShapesReady(featureShapesMap);
+        
         try {
           // Use very low quality (higher tolerance) for history view mesh
           // This keeps the UI responsive. High quality is only for export.
@@ -314,11 +363,18 @@ export const useHistoryCSG = ({
           const mesh = new THREE.Mesh(geometry, material);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
+          // Tag the mesh with the ID of the feature that produced it (the last one)
+          mesh.userData.featureId = features[features.length - 1].id;
           group.add(mesh);
           setTimeout(fitView, 50);
         } catch (e) {
           console.error("Failed to generate mesh from Replicad", e);
         }
+      }
+      
+      // Notify that build is complete
+      if (onBuildComplete) {
+        onBuildComplete();
       }
     };
 

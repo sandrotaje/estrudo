@@ -22,6 +22,8 @@ interface SidebarProps {
   onEditFeature?: (id: string) => void;
   onDeleteFeature?: (id: string) => void;
   onAutoIntersection?: () => void;
+  onSaveProject?: () => void;
+  onLoadProject?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -38,6 +40,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onEditFeature,
   onDeleteFeature,
   onAutoIntersection,
+  onSaveProject,
+  onLoadProject,
 }) => {
   const selectedCount =
     state.selectedPointIds.length +
@@ -440,6 +444,26 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
           ) : (
             <>
+              <section className="mb-4">
+                <h2 className="text-[10px] font-bold text-gray-600 uppercase mb-2">
+                  Project
+                </h2>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={onSaveProject}
+                    className="p-3 bg-[#222] rounded-lg text-xs font-medium border border-white/5 hover:bg-[#333] active:bg-blue-900/20 transition-colors text-left flex items-center gap-2"
+                  >
+                    <span className="text-lg">💾</span> Save
+                  </button>
+                  <button
+                    onClick={onLoadProject}
+                    className="p-3 bg-[#222] rounded-lg text-xs font-medium border border-white/5 hover:bg-[#333] active:bg-blue-900/20 transition-colors text-left flex items-center gap-2"
+                  >
+                    <span className="text-lg">📂</span> Load
+                  </button>
+                </div>
+              </section>
+
               <section className="mb-4">
                 <h2 className="text-[10px] font-bold text-gray-600 uppercase mb-2">
                   Tools

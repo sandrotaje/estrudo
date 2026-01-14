@@ -87,6 +87,12 @@ export interface Feature {
   // Parametric dependencies (for sketches on faces)
   parentFeatureId?: string; // ID of feature this was sketched on
   attachedToFaceIndex?: number; // Which face of parent feature (for re-projection)
+  projectionLastUpdated?: number; // Timestamp when projection was last updated
+  faceSelectionData?: { // Robust face descriptor for re-attachment
+    point: [number, number, number];
+    normal: [number, number, number];
+    faceIndex?: number; // Index of the face in parent shape's .faces array
+  };
   
   // Modification tracking
   createdAt: number; // Timestamp when feature was created
