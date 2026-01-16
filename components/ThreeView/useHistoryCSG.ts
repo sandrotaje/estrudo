@@ -235,7 +235,8 @@ export const useHistoryCSG = ({
                 sketchMatrix.decompose(position, quaternion, scale);
                 
                 // Create wire from drawing
-                let wire = drawing.wire();
+                const sketchForWire = drawing.sketchOnPlane();
+                let wire = sketchForWire.wire;
                 
                 // Convert quaternion to axis-angle for Replicad
                 const angle = 2 * Math.acos(Math.min(1, Math.max(-1, quaternion.w)));
