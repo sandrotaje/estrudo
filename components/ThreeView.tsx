@@ -967,7 +967,18 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onNewSketchOnPlane={() => setShowPlaneSelector(true)}
       />
       {!hasActiveSketch && !initialFeatureParams && onStartSketchOnPlane && (showPlaneSelector || features.length === 0) && (
-        <PlaneSelector onSelectPlane={(transform) => { setShowPlaneSelector(false); onStartSketchOnPlane(transform); }} onCancel={() => setShowPlaneSelector(false)} />
+        <PlaneSelector
+          onSelectPlane={(transform) => {
+            setShowPlaneSelector(false);
+            setSelectedFaceData(null);
+            onStartSketchOnPlane(transform);
+          }}
+          onCancel={() => {
+            setShowPlaneSelector(false);
+            setSelectedFaceData(null);
+          }}
+          selectedFaceData={selectedFaceData}
+        />
       )}
     </div>
   );

@@ -1,22 +1,36 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import * as THREE from "three";
 
-export type PlaneType = "XY" | "XZ" | "YZ";
+export type PlaneType = "XY" | "XZ" | "YZ" | "FACE";
+
+export interface FaceData {
+  point: THREE.Vector3;
+  normal: THREE.Vector3;
+  boundaryEdges: THREE.Line3[];
+  faceVertices: Float32Array;
+  matrixWorld: THREE.Matrix4;
+  featureId?: string;
+}
 
 interface PlaneSelectorProps {
   onCancel?: () => void;
   onSelectPlane: (transform: number[]) => void;
+  selectedFaceData?: FaceData | null;
 }
 
-const PLANE_INFO: Record<PlaneType, { 
-  label: string; 
-  description: string; 
+type StandardPlaneType = "XY" | "XZ" | "YZ";
+
+interface PlaneInfo {
+  label: string;
+  description: string;
   color: string;
   icon: string;
   normal: THREE.Vector3;
   xAxis: THREE.Vector3;
   yAxis: THREE.Vector3;
-}> = {
+}
+
+const STANDARD_PLANE_INFO: Record<StandardPlaneType, PlaneInfo> = {
   XY: {
     label: "XY Plane",
     description: "Top view (Z up)",
@@ -46,42 +60,90 @@ const PLANE_INFO: Record<PlaneType, {
   },
 };
 
-const PlaneSelector: React.FC<PlaneSelectorProps> = ({ onSelectPlane, onCancel }) => {
-  const [selectedPlane, setSelectedPlane] = useState<PlaneType>("XY");
+const PlaneSelector: React.FC<PlaneSelectorProps> = ({ onSelectPlane, onCancel, selectedFaceData }) => {
+  // Default to FACE if face data is available, otherwise XY
+  const [selectedPlane, setSelectedPlane] = useState<PlaneType>(selectedFaceData ? "FACE" : "XY");
   const [offset, setOffset] = useState(0);
   const [rotationAngle, setRotationAngle] = useState(0);
 
+  // Update selection when face data becomes available
+  useEffect(() => {
+    if (selectedFaceData && selectedPlane !== "FACE") {
+      setSelectedPlane("FACE");
+    }
+  }, [selectedFaceData]);
+
+  // Compute face plane info from face data
+  const facePlaneInfo = useMemo((): PlaneInfo | null => {
+    if (!selectedFaceData) return null;
+
+    const normal = selectedFaceData.normal.clone().normalize();
+
+    // Compute X and Y axes from the face normal
+    // Use a consistent up vector to derive X axis
+    let upVector = new THREE.Vector3(0, 0, 1);
+    // If normal is parallel to up vector, use a different reference
+    if (Math.abs(normal.dot(upVector)) > 0.99) {
+      upVector = new THREE.Vector3(0, 1, 0);
+    }
+
+    const xAxis = new THREE.Vector3().crossVectors(upVector, normal).normalize();
+    const yAxis = new THREE.Vector3().crossVectors(normal, xAxis).normalize();
+
+    return {
+      label: "Face Plane",
+      description: "Offset from selected face",
+      color: "bg-cyan-600",
+      icon: "◈",
+      normal,
+      xAxis,
+      yAxis,
+    };
+  }, [selectedFaceData]);
+
   const generateTransform = useMemo(() => {
-    const info = PLANE_INFO[selectedPlane];
-    
+    let info: PlaneInfo;
+    let basePosition: THREE.Vector3;
+
+    if (selectedPlane === "FACE" && facePlaneInfo && selectedFaceData) {
+      info = facePlaneInfo;
+      // Base position is the point on the face
+      basePosition = selectedFaceData.point.clone();
+    } else {
+      const standardPlane = selectedPlane === "FACE" ? "XY" : selectedPlane;
+      info = STANDARD_PLANE_INFO[standardPlane as StandardPlaneType];
+      // Base position is origin for standard planes
+      basePosition = new THREE.Vector3(0, 0, 0);
+    }
+
     // Start with the plane's basis vectors
     let xAxis = info.xAxis.clone();
     let yAxis = info.yAxis.clone();
     const zAxis = info.normal.clone();
-    
+
     // Apply rotation around the normal (Z in local space)
     if (rotationAngle !== 0) {
       const angleRad = (rotationAngle * Math.PI) / 180;
       const cos = Math.cos(angleRad);
       const sin = Math.sin(angleRad);
-      
+
       // Rotate X and Y axes around Z (normal)
       const newX = xAxis.clone().multiplyScalar(cos).add(yAxis.clone().multiplyScalar(sin));
       const newY = xAxis.clone().multiplyScalar(-sin).add(yAxis.clone().multiplyScalar(cos));
       xAxis = newX;
       yAxis = newY;
     }
-    
-    // Calculate position (offset along normal)
-    const position = zAxis.clone().multiplyScalar(offset);
-    
+
+    // Calculate position (base position + offset along normal)
+    const position = basePosition.clone().add(zAxis.clone().multiplyScalar(offset));
+
     // Build the transform matrix (column-major order)
     const matrix = new THREE.Matrix4();
     matrix.makeBasis(xAxis, yAxis, zAxis);
     matrix.setPosition(position);
-    
+
     return matrix.toArray();
-  }, [selectedPlane, offset, rotationAngle]);
+  }, [selectedPlane, offset, rotationAngle, facePlaneInfo, selectedFaceData]);
 
   const handleStartSketch = () => {
     onSelectPlane(generateTransform);
@@ -105,14 +167,69 @@ const PlaneSelector: React.FC<PlaneSelectorProps> = ({ onSelectPlane, onCancel }
           </div>
         </div>
 
-        {/* Plane Selection */}
+        {/* Face Plane Option (when face is selected) */}
+        {selectedFaceData && facePlaneInfo && (
+          <div className="mb-4">
+            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">
+              Selected Face
+            </label>
+            <button
+              onClick={() => setSelectedPlane("FACE")}
+              className={`relative w-full p-3 rounded-xl border-2 transition-all ${
+                selectedPlane === "FACE"
+                  ? `${facePlaneInfo.color} border-white/30 shadow-lg`
+                  : "bg-[#0a0a0a] border-white/5 hover:border-white/20"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg ${
+                  selectedPlane === "FACE" ? "bg-white/20" : "bg-white/5"
+                }`}>
+                  <svg viewBox="0 0 40 40" className="w-8 h-8">
+                    <polygon
+                      points="20,5 35,15 30,35 10,35 5,15"
+                      fill={selectedPlane === "FACE" ? "#fff" : "#666"}
+                      opacity="0.3"
+                    />
+                    <polygon
+                      points="20,5 35,15 30,35 10,35 5,15"
+                      fill="none"
+                      stroke={selectedPlane === "FACE" ? "#fff" : "#666"}
+                      strokeWidth="2"
+                    />
+                    <line x1="20" y1="20" x2="20" y2="2" stroke="#0ff" strokeWidth="2" markerEnd="url(#arrowhead)" />
+                  </svg>
+                </div>
+                <div className="flex flex-col text-left">
+                  <span className={`text-[11px] font-bold uppercase ${
+                    selectedPlane === "FACE" ? "text-white" : "text-gray-400"
+                  }`}>
+                    Face Plane
+                  </span>
+                  <span className={`text-[9px] ${
+                    selectedPlane === "FACE" ? "text-white/70" : "text-gray-500"
+                  }`}>
+                    Offset from selected face
+                  </span>
+                </div>
+              </div>
+              {selectedPlane === "FACE" && (
+                <div className="absolute -top-1 -right-1 w-4 h-4 bg-white rounded-full flex items-center justify-center">
+                  <span className="text-[10px]">✓</span>
+                </div>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* Standard Plane Selection */}
         <div className="space-y-2 mb-6">
           <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-            Sketch Plane
+            {selectedFaceData ? "Or Select Standard Plane" : "Sketch Plane"}
           </label>
           <div className="grid grid-cols-3 gap-2">
-            {(Object.keys(PLANE_INFO) as PlaneType[]).map((plane) => {
-              const info = PLANE_INFO[plane];
+            {(Object.keys(STANDARD_PLANE_INFO) as StandardPlaneType[]).map((plane) => {
+              const info = STANDARD_PLANE_INFO[plane];
               const isSelected = selectedPlane === plane;
               return (
                 <button
@@ -175,14 +292,19 @@ const PlaneSelector: React.FC<PlaneSelectorProps> = ({ onSelectPlane, onCancel }
             })}
           </div>
           <p className="text-[10px] text-gray-500 text-center mt-1">
-            {PLANE_INFO[selectedPlane].description}
+            {selectedPlane === "FACE" && facePlaneInfo
+              ? facePlaneInfo.description
+              : selectedPlane !== "FACE"
+              ? STANDARD_PLANE_INFO[selectedPlane as StandardPlaneType].description
+              : "Select a plane"
+            }
           </p>
         </div>
 
         {/* Offset Input */}
         <div className="space-y-2 mb-4">
           <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-            Offset from Origin (mm)
+            {selectedPlane === "FACE" ? "Offset from Face (mm)" : "Offset from Origin (mm)"}
           </label>
           <div className="flex items-center gap-3">
             <input
