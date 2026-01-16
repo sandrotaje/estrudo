@@ -950,7 +950,8 @@ const App: React.FC = () => {
     throughAll: boolean,
     featureType: "EXTRUDE" | "REVOLVE" | "SKETCH" | "LOFT",
     revolveAngle?: number,
-    revolveAxisId?: string
+    revolveAxisId?: string,
+    loftSketchIds?: string[]
   ) => {
     const now = Date.now();
     const existingFeature = editingFeatureId ? features.find((f) => f.id === editingFeatureId) : null;
