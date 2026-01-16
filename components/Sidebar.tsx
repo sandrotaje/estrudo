@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { SketchState, ConstraintType, Feature } from "../types";
+import { shouldShowProjectionWarning } from "../utils/projectionUtils";
 
 interface SidebarProps {
   isOpen: boolean;
@@ -21,6 +22,8 @@ interface SidebarProps {
   onEditFeature?: (id: string) => void;
   onDeleteFeature?: (id: string) => void;
   onAutoIntersection?: () => void;
+  onSaveProject?: () => void;
+  onLoadProject?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -37,6 +40,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onEditFeature,
   onDeleteFeature,
   onAutoIntersection,
+  onSaveProject,
+  onLoadProject,
 }) => {
   const selectedCount =
     state.selectedPointIds.length +
@@ -336,7 +341,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                   No extruded features yet
                 </div>
               )}
-              {features.map((feature, i) => (
+              {features.map((feature, i) => {
+                const showWarning = shouldShowProjectionWarning(feature, features);
+                return (
                 <div
                   key={feature.id}
                   className={`p-2 rounded flex items-center justify-between group ${
@@ -348,9 +355,19 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <div className="flex items-center gap-2">
                     <span className="text-lg">🧊</span>
                     <div className="flex flex-col">
-                      <span className="text-[10px] font-bold text-gray-300">
-                        {feature.name}
-                      </span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] font-bold text-gray-300">
+                          {feature.name}
+                        </span>
+                        {showWarning && (
+                          <span 
+                            className="text-xs" 
+                            title="This feature has imported face edges that may be outdated because a previous feature was modified"
+                          >
+                            ⚠️
+                          </span>
+                        )}
+                      </div>
                       <span className="text-[8px] text-gray-600">
                         Depth: {feature.extrusionDepth}mm
                       </span>
@@ -373,7 +390,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </button>
                   </div>
                 </div>
-              ))}
+              );
+              })}
 
               {editingFeatureId && (
                 <div className="mt-2 text-[10px] text-blue-400 font-bold text-center animate-pulse">
@@ -426,6 +444,26 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
           ) : (
             <>
+              <section className="mb-4">
+                <h2 className="text-[10px] font-bold text-gray-600 uppercase mb-2">
+                  Project
+                </h2>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={onSaveProject}
+                    className="p-3 bg-[#222] rounded-lg text-xs font-medium border border-white/5 hover:bg-[#333] active:bg-blue-900/20 transition-colors text-left flex items-center gap-2"
+                  >
+                    <span className="text-lg">💾</span> Save
+                  </button>
+                  <button
+                    onClick={onLoadProject}
+                    className="p-3 bg-[#222] rounded-lg text-xs font-medium border border-white/5 hover:bg-[#333] active:bg-blue-900/20 transition-colors text-left flex items-center gap-2"
+                  >
+                    <span className="text-lg">📂</span> Load
+                  </button>
+                </div>
+              </section>
+
               <section className="mb-4">
                 <h2 className="text-[10px] font-bold text-gray-600 uppercase mb-2">
                   Tools

@@ -510,10 +510,19 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
       const nearCr = findNearbyCircle(world.x, world.y);
 
       if (nearPt) { 
-        onInteractionStart?.(); onSelectElements({ points: [nearPt.id] }, 'TOGGLE'); setDraggingPointId(nearPt.id); 
+        onInteractionStart?.(); 
+        onSelectElements({ points: [nearPt.id] }, 'TOGGLE'); 
+        // Only allow dragging if point is not fixed
+        const isFixed = state.constraints.some(c => c.type === ConstraintType.FIXED && c.points.includes(nearPt.id)) || nearPt.fixed;
+        if (!isFixed) {
+          setDraggingPointId(nearPt.id);
+        }
       } else if (nearCr) {
         onSelectElements({ circles: [nearCr.id] }, 'TOGGLE');
-        setDraggingCircleRadiusId(nearCr.id);
+        // Don't allow radius dragging for projected circles (they have IDs starting with c_proj_ or a_proj_)
+        if (!nearCr.id.startsWith('c_proj_') && !nearCr.id.startsWith('a_proj_')) {
+          setDraggingCircleRadiusId(nearCr.id);
+        }
       } else if (nearLn) { 
         onSelectElements({ lines: [nearLn.id] }, 'TOGGLE'); 
       } else {

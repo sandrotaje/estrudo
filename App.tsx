@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
+import * as THREE from "three";
 import {
   Point,
   Line,
@@ -15,6 +16,7 @@ import ThreeView from "./components/ThreeView";
 import Sidebar from "./components/Sidebar";
 import Toolbar from "./components/Toolbar";
 import FloatingConstraints from "./components/FloatingConstraints";
+import { initReplicad } from "./services/replicad";
 
 const INITIAL_STATE: SketchState = {
   points: [],
@@ -142,11 +144,28 @@ const App: React.FC = () => {
   >(undefined);
 
   const [viewMode, setViewMode] = useState<"2D" | "3D">("2D");
+  
+  // Store pending parent info for new features (sketch-on-face)
+  const pendingParentInfoRef = useRef<{
+    parentFeatureId?: string;
+    faceSelectionData?: { point: [number, number, number]; normal: [number, number, number] };
+  }>({});
+  
+  // Store the latest feature shapes from useHistoryCSG for auto-update
+  const featureShapesRef = useRef<Map<string, any>>(new Map());
+  
+  // Prevent infinite loops in auto-update
+  const isAutoUpdatingRef = useRef(false);
+
   const [past, setPast] = useState<SketchState[]>([]);
   const [future, setFuture] = useState<SketchState[]>([]);
   const [aiAdvice, setAiAdvice] = useState<string | null>(null);
   const [isSolving, setIsSolving] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    initReplicad().catch(console.error);
+  }, []);
 
   const [pendingValueConstraint, setPendingValueConstraint] = useState<{
     id?: string;
@@ -933,10 +952,13 @@ const App: React.FC = () => {
     revolveAngle?: number,
     revolveAxisId?: string
   ) => {
+    const now = Date.now();
+    const existingFeature = editingFeatureId ? features.find((f) => f.id === editingFeatureId) : null;
+    
     const newFeature: Feature = {
-      id: editingFeatureId || `f_${Date.now()}`,
+      id: editingFeatureId || `f_${now}`,
       name: editingFeatureId
-        ? features.find((f) => f.id === editingFeatureId)?.name ||
+        ? existingFeature?.name ||
           (operation === "CUT"
             ? "Cut"
             : featureType === "REVOLVE"
@@ -959,7 +981,20 @@ const App: React.FC = () => {
       transform: currentTransform || [
         1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
       ],
+      // Attach dependency info if available
+      parentFeatureId: editingFeatureId ? existingFeature?.parentFeatureId : pendingParentInfoRef.current.parentFeatureId,
+      faceSelectionData: editingFeatureId ? existingFeature?.faceSelectionData : pendingParentInfoRef.current.faceSelectionData,
+      // Set projectionLastUpdated to now if this is a sketch-on-face
+      projectionLastUpdated: (editingFeatureId ? existingFeature?.projectionLastUpdated : pendingParentInfoRef.current.parentFeatureId ? now : undefined),
+      
+      createdAt: existingFeature?.createdAt || now,
+      lastModified: now,
     };
+    
+    // Clear pending info after consuming
+    if (!editingFeatureId) {
+       pendingParentInfoRef.current = {};
+    }
 
     setFeatures((prev) => {
       if (editingFeatureId) {
@@ -1020,9 +1055,31 @@ const App: React.FC = () => {
     points: Point[],
     transform: number[],
     arcs: Arc[],
-    circles: Circle[]
+    circles: Circle[],
+    parentFeatureId?: string,
+    faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
   ) => {
-    const newFeatureId = `f_${Date.now()}`;
+    // We don't create the feature immediately, but we need to store these params
+    // so they are included when the feature is eventually created/committed.
+    // However, App.tsx currently only has 'editingFeatureId' and 'state' (sketch state).
+    // The Feature object is created in handleCommitFeature.
+    
+    // TEMPORARY HACK: Store these in a ref or temporary state so handleCommitFeature can access them.
+    // Ideally we should start editing a new Feature object immediately.
+    
+    // For now, let's attach them to the 'state' object if possible, or use a separate ref.
+    // But 'state' is SketchState. 
+    
+    // Let's store them in a temporary "pendingFeatureParams" ref/state in App?
+    // Or better: modify handleCommitFeature to accept optional parent info?
+    // But handleCommitFeature is called from ThreeViewOverlay.
+    
+    // Let's rely on the fact that when we start a sketch on face, we set the sketch state.
+    // We can add these properties to the initial sketch state, but SketchState is purely 2D.
+    
+    // Solution: Store in a ref here in App.tsx
+    pendingParentInfoRef.current = { parentFeatureId, faceSelectionData };
+
     setEditingFeatureId(null);
     setCurrentTransform(transform);
     setState({
@@ -1033,6 +1090,541 @@ const App: React.FC = () => {
       circles: circles || [],
     });
     setViewMode("2D");
+  };
+  
+  const handleReimportFaceEdges = (
+    newLines: Line[],
+    newPoints: Point[],
+    transform: number[],
+    newCircles?: Circle[],
+    newArcs?: Arc[]
+  ) => {
+    // Update the current sketch state by:
+    // 1. Remove old projected lines and points
+    // 2. Match new projected points to old ones by proximity
+    // 3. Update positions while preserving IDs (so constraints remain valid)
+    // 4. Add any completely new projected geometry
+    
+    const oldProjPoints = state.points.filter(p => p.id.startsWith('p_proj_'));
+    const oldProjLines = state.lines.filter(l => l.id.startsWith('l_proj_'));
+    const oldProjCircles = state.circles.filter(c => c.id.startsWith('c_proj_'));
+    const oldProjArcs = state.arcs.filter(a => a.id.startsWith('a_proj_'));
+    const nonProjPoints = state.points.filter(p => !p.id.startsWith('p_proj_'));
+    const nonProjLines = state.lines.filter(l => !l.id.startsWith('l_proj_'));
+    const nonProjCircles = state.circles.filter(c => !c.id.startsWith('c_proj_'));
+    const nonProjArcs = state.arcs.filter(a => !a.id.startsWith('a_proj_'));
+    
+    // Match old projected points to new ones by proximity (within 10mm)
+    const updatedPoints: Point[] = [...nonProjPoints];
+    const unmatchedNewPoints: Point[] = [];
+    const newPointIdMap = new Map<string, string>(); // new ID -> old ID
+    
+    for (const newPoint of newPoints) {
+      let closestOld: Point | null = null;
+      let closestDist = Infinity;
+      
+      for (const oldPoint of oldProjPoints) {
+        const dist = Math.sqrt(
+          Math.pow(newPoint.x - oldPoint.x, 2) + 
+          Math.pow(newPoint.y - oldPoint.y, 2)
+        );
+        
+        if (dist < closestDist && dist < 10.0) { // 10mm threshold
+          closestDist = dist;
+          closestOld = oldPoint;
+        }
+      }
+      
+      if (closestOld) {
+        // Update the old point's position
+        updatedPoints.push({
+          ...closestOld,
+          x: newPoint.x,
+          y: newPoint.y,
+        });
+        newPointIdMap.set(newPoint.id, closestOld.id);
+      } else {
+        // This is a truly new point
+        unmatchedNewPoints.push(newPoint);
+      }
+    }
+    
+    // Add any unmatched new points
+    updatedPoints.push(...unmatchedNewPoints);
+    
+    // Update lines to use old point IDs where possible
+    const updatedLines: Line[] = [...nonProjLines];
+    for (const newLine of newLines) {
+      updatedLines.push({
+        ...newLine,
+        p1: newPointIdMap.get(newLine.p1) || newLine.p1,
+        p2: newPointIdMap.get(newLine.p2) || newLine.p2,
+      });
+    }
+    
+    // Handle circles - match by proximity of centers and similar radii
+    const updatedCircles: Circle[] = [...nonProjCircles];
+    const circleIdMap = new Map<string, string>(); // new ID -> old ID
+    
+    if (newCircles) {
+      for (const newCircle of newCircles) {
+        let closestOld: Circle | null = null;
+        let closestDist = Infinity;
+        
+        // Get the center point coordinates
+        const newCenterPoint = updatedPoints.find(p => p.id === (newPointIdMap.get(newCircle.center) || newCircle.center));
+        if (!newCenterPoint) continue;
+        
+        for (const oldCircle of oldProjCircles) {
+          const oldCenterPoint = oldProjPoints.find(p => p.id === oldCircle.center);
+          if (!oldCenterPoint) continue;
+          
+          const centerDist = Math.sqrt(
+            Math.pow(newCenterPoint.x - oldCenterPoint.x, 2) + 
+            Math.pow(newCenterPoint.y - oldCenterPoint.y, 2)
+          );
+          const radiusDiff = Math.abs(newCircle.radius - oldCircle.radius);
+          
+          // Match if center is within 10mm and radius within 1mm
+          if (centerDist < 10.0 && radiusDiff < 1.0 && centerDist < closestDist) {
+            closestDist = centerDist;
+            closestOld = oldCircle;
+          }
+        }
+        
+        if (closestOld) {
+          // Update the old circle with new properties
+          updatedCircles.push({
+            ...closestOld,
+            center: newPointIdMap.get(newCircle.center) || newCircle.center,
+            radius: newCircle.radius,
+          });
+          circleIdMap.set(newCircle.id, closestOld.id);
+        } else {
+          // Add as new circle
+          updatedCircles.push({
+            ...newCircle,
+            center: newPointIdMap.get(newCircle.center) || newCircle.center,
+          });
+        }
+      }
+    }
+    
+    // Handle arcs - match by proximity of centers and similar radii
+    const updatedArcs: Arc[] = [...nonProjArcs];
+    
+    if (newArcs) {
+      for (const newArc of newArcs) {
+        let closestOld: Arc | null = null;
+        let closestDist = Infinity;
+        
+        // Get the center point coordinates
+        const newCenterPoint = updatedPoints.find(p => p.id === (newPointIdMap.get(newArc.center) || newArc.center));
+        if (!newCenterPoint) continue;
+        
+        for (const oldArc of oldProjArcs) {
+          const oldCenterPoint = oldProjPoints.find(p => p.id === oldArc.center);
+          if (!oldCenterPoint) continue;
+          
+          const centerDist = Math.sqrt(
+            Math.pow(newCenterPoint.x - oldCenterPoint.x, 2) + 
+            Math.pow(newCenterPoint.y - oldCenterPoint.y, 2)
+          );
+          const radiusDiff = Math.abs(newArc.radius - oldArc.radius);
+          
+          // Match if center is within 10mm and radius within 1mm
+          if (centerDist < 10.0 && radiusDiff < 1.0 && centerDist < closestDist) {
+            closestDist = centerDist;
+            closestOld = oldArc;
+          }
+        }
+        
+        if (closestOld) {
+          // Update the old arc with new properties
+          updatedArcs.push({
+            ...closestOld,
+            center: newPointIdMap.get(newArc.center) || newArc.center,
+            radius: newArc.radius,
+            p1: newPointIdMap.get(newArc.p1) || newArc.p1,
+            p2: newPointIdMap.get(newArc.p2) || newArc.p2,
+          });
+        } else {
+          // Add as new arc
+          updatedArcs.push({
+            ...newArc,
+            center: newPointIdMap.get(newArc.center) || newArc.center,
+            p1: newPointIdMap.get(newArc.p1) || newArc.p1,
+            p2: newPointIdMap.get(newArc.p2) || newArc.p2,
+          });
+        }
+      }
+    }
+    
+    // Update the state
+    saveToHistory();
+    setState(prev => ({
+      ...prev,
+      points: updatedPoints,
+      lines: updatedLines,
+      circles: updatedCircles,
+      arcs: updatedArcs,
+    }));
+    
+    // Update the transform if it changed
+    setCurrentTransform(transform);
+    
+    // Update the feature's lastModified timestamp to dismiss the warning
+    if (editingFeatureId) {
+      const now = Date.now();
+      setFeatures((prev) =>
+        prev.map((f) =>
+          f.id === editingFeatureId
+            ? { ...f, lastModified: now }
+            : f
+        )
+      );
+    }
+    
+    console.log(`Re-imported face edges: matched ${newPointIdMap.size} points, added ${unmatchedNewPoints.length} new points, ${(newCircles || []).length} circles, ${(newArcs || []).length} arcs`);
+  };
+  
+  // Auto-update callback: detect stale projections and auto-update them
+  // This is called after geometry rebuilds complete in useHistoryCSG
+  const handleAutoUpdateProjections = useCallback(() => {
+    // Prevent re-entry
+    if (isAutoUpdatingRef.current) {
+      console.log('[Auto-Update] Already updating, skipping');
+      return;
+    }
+    
+    console.log('[Auto-Update] Callback triggered, features count:', features.length);
+    console.log('[Auto-Update] Feature shapes available:', featureShapesRef.current.size);
+    
+    // Only run if we have feature shapes available
+    if (featureShapesRef.current.size === 0) {
+      console.log('[Auto-Update] No feature shapes yet, skipping');
+      return;
+    }
+    
+    // Find features that need auto-update
+    const featuresToUpdate: Array<{ feature: Feature; parentShape: any }> = [];
+    
+    for (const feature of features) {
+      console.log(`[Auto-Update] Checking feature ${feature.name}:`, {
+        hasParent: !!feature.parentFeatureId,
+        hasFaceData: !!feature.faceSelectionData,
+        parentId: feature.parentFeatureId,
+        projectionLastUpdated: feature.projectionLastUpdated,
+        lastModified: feature.lastModified,
+        createdAt: feature.createdAt
+      });
+      
+      // Skip if no parent dependency
+      if (!feature.parentFeatureId || !feature.faceSelectionData) {
+        console.log(`[Auto-Update] Skipping ${feature.name}: no parent dependency`);
+        continue;
+      }
+      
+      // Check if parent exists and has a shape
+      const parentShape = featureShapesRef.current.get(feature.parentFeatureId);
+      if (!parentShape) {
+        console.log(`[Auto-Update] Skipping ${feature.name}: parent shape not found`);
+        continue;
+      }
+      
+      // Check if parent was modified after this feature's projection
+      const parent = features.find(f => f.id === feature.parentFeatureId);
+      if (!parent) {
+        console.log(`[Auto-Update] Skipping ${feature.name}: parent feature not found in list`);
+        continue;
+      }
+      
+      const lastUpdate = feature.projectionLastUpdated || feature.createdAt || 0;
+      console.log(`[Auto-Update] Comparing timestamps for ${feature.name}:`, {
+        parentLastModified: parent.lastModified,
+        featureLastUpdate: lastUpdate,
+        needsUpdate: parent.lastModified > lastUpdate
+      });
+      
+      if (parent.lastModified <= lastUpdate) {
+        console.log(`[Auto-Update] Skipping ${feature.name}: up to date`);
+        continue;
+      }
+      
+      console.log(`[Auto-Update] ✓ ${feature.name} needs update!`);
+      featuresToUpdate.push({ feature, parentShape });
+    }
+    
+    if (featuresToUpdate.length === 0) {
+      console.log('[Auto-Update] No features need updating');
+      return;
+    }
+    
+    console.log(`Auto-updating ${featuresToUpdate.length} stale projection(s)`);
+    
+    // Set the updating flag
+    isAutoUpdatingRef.current = true;
+    
+    // Import the face matching utility
+    import('./utils/faceMatching').then(({ findMatchingFace }) => {
+      // Update each stale feature
+      const now = Date.now();
+      
+      setFeatures(prev => {
+        const updated = [...prev];
+        
+        for (const { feature, parentShape } of featuresToUpdate) {
+          const idx = updated.findIndex(f => f.id === feature.id);
+          if (idx === -1) continue;
+          
+          // Try to find matching face
+          const matchedFace = findMatchingFace(parentShape, feature.faceSelectionData!);
+          
+          if (!matchedFace) {
+            console.warn(`Could not find matching face for feature ${feature.name} - parent topology changed`);
+            // Mark as needing manual intervention
+            updated[idx] = {
+              ...updated[idx],
+              projectionLastUpdated: 0, // Force warning
+            };
+            continue;
+          }
+          
+          console.log(`Re-projecting feature ${feature.name} from updated parent`);
+          
+          // Re-project edges using the same logic as in ThreeView
+          // We need to import and call projectFaceEdges logic here
+          // For now, let's extract it inline
+          
+          const { boundaryEdges, normal, point: newFaceCentroid } = matchedFace;
+          
+          // Reconstruct the transform matrix while preserving BOTH orientation AND origin offset
+          const zAxis = normal.clone().normalize();
+          
+          // IMPORTANT: Try to preserve the original X/Y axis orientation from the old transform
+          // This prevents the sketch from rotating when the parent geometry changes
+          const oldTransform = new THREE.Matrix4().fromArray(feature.transform);
+          const oldOrigin = new THREE.Vector3(feature.transform[12], feature.transform[13], feature.transform[14]);
+          const oldXAxis = new THREE.Vector3(feature.transform[0], feature.transform[1], feature.transform[2]).normalize();
+          const oldYAxis = new THREE.Vector3(feature.transform[4], feature.transform[5], feature.transform[6]).normalize();
+          const oldZAxis = new THREE.Vector3(feature.transform[8], feature.transform[9], feature.transform[10]).normalize();
+          
+          console.log(`  Old origin: [${oldOrigin.x.toFixed(3)}, ${oldOrigin.y.toFixed(3)}, ${oldOrigin.z.toFixed(3)}]`);
+          console.log(`  Old X-axis: [${oldXAxis.x.toFixed(3)}, ${oldXAxis.y.toFixed(3)}, ${oldXAxis.z.toFixed(3)}]`);
+          console.log(`  Old Y-axis: [${oldYAxis.x.toFixed(3)}, ${oldYAxis.y.toFixed(3)}, ${oldYAxis.z.toFixed(3)}]`);
+          console.log(`  Old Z-axis: [${oldZAxis.x.toFixed(3)}, ${oldZAxis.y.toFixed(3)}, ${oldZAxis.z.toFixed(3)}]`);
+          console.log(`  New face centroid: [${newFaceCentroid.x.toFixed(3)}, ${newFaceCentroid.y.toFixed(3)}, ${newFaceCentroid.z.toFixed(3)}]`);
+          console.log(`  New Z-axis (normal): [${zAxis.x.toFixed(3)}, ${zAxis.y.toFixed(3)}, ${zAxis.z.toFixed(3)}]`);
+          
+          // Calculate the offset from the old face centroid to the old origin
+          // The old face centroid was stored in faceSelectionData.point
+          const oldFaceCentroid = new THREE.Vector3(...feature.faceSelectionData!.point);
+          const originOffsetFromFace = new THREE.Vector3().subVectors(oldOrigin, oldFaceCentroid);
+          console.log(`  Old face centroid: [${oldFaceCentroid.x.toFixed(3)}, ${oldFaceCentroid.y.toFixed(3)}, ${oldFaceCentroid.z.toFixed(3)}]`);
+          console.log(`  Origin offset from face: [${originOffsetFromFace.x.toFixed(3)}, ${originOffsetFromFace.y.toFixed(3)}, ${originOffsetFromFace.z.toFixed(3)}]`);
+          
+          // Project the old X-axis onto the new face plane (perpendicular to new normal)
+          let xAxis = oldXAxis.clone().sub(zAxis.clone().multiplyScalar(oldXAxis.dot(zAxis))).normalize();
+          
+          // If the old X-axis was nearly parallel to the new normal, try the old Y-axis
+          if (xAxis.lengthSq() < 0.1) {
+            console.log('  Old X-axis parallel to new normal, trying old Y-axis');
+            xAxis = oldYAxis.clone().sub(zAxis.clone().multiplyScalar(oldYAxis.dot(zAxis))).normalize();
+          }
+          
+          // If both old axes are parallel to new normal, pick an arbitrary perpendicular vector
+          if (xAxis.lengthSq() < 0.1) {
+            console.log('  Both old axes parallel to new normal, picking arbitrary X-axis');
+            xAxis = new THREE.Vector3().crossVectors(zAxis, new THREE.Vector3(0, 1, 0)).normalize();
+            if (xAxis.lengthSq() < 0.1) {
+              xAxis = new THREE.Vector3().crossVectors(zAxis, new THREE.Vector3(1, 0, 0)).normalize();
+            }
+          }
+          
+          // Reconstruct Y-axis and normalize X-axis
+          const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+          xAxis.crossVectors(yAxis, zAxis).normalize();
+          
+          console.log(`  New X-axis: [${xAxis.x.toFixed(3)}, ${xAxis.y.toFixed(3)}, ${xAxis.z.toFixed(3)}]`);
+          console.log(`  New Y-axis: [${yAxis.x.toFixed(3)}, ${yAxis.y.toFixed(3)}, ${yAxis.z.toFixed(3)}]`);
+          
+          // Calculate the new origin while preserving the sketch's position on the face
+          // Strategy: Transform the old origin through the change in face position
+          // 1. Express old origin in the old face's local coordinates
+          // 2. Apply to the new face's coordinate system
+          
+          const oldFaceToWorld = new THREE.Matrix4().makeBasis(oldXAxis, oldYAxis, oldZAxis);
+          oldFaceToWorld.setPosition(oldFaceCentroid);
+          const worldToOldFace = oldFaceToWorld.clone().invert();
+          
+          // Get the old origin in the old face's local coordinates
+          const oldOriginInFaceCoords = oldOrigin.clone().applyMatrix4(worldToOldFace);
+          console.log(`  Old origin in old face coords: [${oldOriginInFaceCoords.x.toFixed(3)}, ${oldOriginInFaceCoords.y.toFixed(3)}, ${oldOriginInFaceCoords.z.toFixed(3)}]`);
+          
+          // Now apply this to the new face's coordinate system
+          const newFaceToWorld = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+          newFaceToWorld.setPosition(newFaceCentroid);
+          
+          const newOrigin = oldOriginInFaceCoords.clone().applyMatrix4(newFaceToWorld);
+          console.log(`  New origin: [${newOrigin.x.toFixed(3)}, ${newOrigin.y.toFixed(3)}, ${newOrigin.z.toFixed(3)}]`);
+          
+          const localToWorld = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+          localToWorld.setPosition(newOrigin);
+          const worldToLocal = localToWorld.clone().invert();
+          
+          // Transform edges to sketch space
+          const edgesInSketchSpace = boundaryEdges.map(edge => {
+            const startSketch = edge.start.clone().applyMatrix4(worldToLocal);
+            const endSketch = edge.end.clone().applyMatrix4(worldToLocal);
+            return new THREE.Line3(startSketch, endSketch);
+          });
+          
+          // Convert to projected lines/points
+          const projectedPoints: Point[] = [];
+          const projectedLines: Line[] = [];
+          
+          const findPoint = (x: number, y: number) =>
+            projectedPoints.find(p => Math.abs(p.x - x) < 0.001 && Math.abs(p.y - y) < 0.001);
+          
+          const getOrCreatePoint = (x: number, y: number): Point => {
+            let p = findPoint(x, y);
+            if (!p) {
+              p = {
+                id: `p_proj_${Math.random().toString(36).substr(2, 9)}`,
+                x, y,
+                fixed: true,
+              };
+              projectedPoints.push(p);
+            }
+            return p;
+          };
+          
+          edgesInSketchSpace.forEach(edge => {
+            const p1 = getOrCreatePoint(edge.start.x, edge.start.y);
+            const p2 = getOrCreatePoint(edge.end.x, edge.end.y);
+            projectedLines.push({
+              id: `l_proj_${Math.random().toString(36).substr(2, 9)}`,
+              p1: p1.id,
+              p2: p2.id,
+              construction: true,
+            });
+          });
+          
+          // Now merge with existing sketch (same logic as handleReimportFaceEdges)
+          const oldSketch = feature.sketch;
+          const oldProjPoints = oldSketch.points.filter(p => p.id.startsWith('p_proj_'));
+          const oldProjLines = oldSketch.lines.filter(l => l.id.startsWith('l_proj_'));
+          const nonProjPoints = oldSketch.points.filter(p => !p.id.startsWith('p_proj_'));
+          const nonProjLines = oldSketch.lines.filter(l => !l.id.startsWith('l_proj_'));
+          
+          // Match points by proximity
+          const updatedPoints: Point[] = [...nonProjPoints];
+          const newPointIdMap = new Map<string, string>();
+          
+          for (const newPoint of projectedPoints) {
+            let closestOld: Point | null = null;
+            let closestDist = Infinity;
+            
+            for (const oldPoint of oldProjPoints) {
+              const dist = Math.sqrt(
+                Math.pow(newPoint.x - oldPoint.x, 2) + Math.pow(newPoint.y - oldPoint.y, 2)
+              );
+              if (dist < closestDist && dist < 10.0) {
+                closestDist = dist;
+                closestOld = oldPoint;
+              }
+            }
+            
+            if (closestOld) {
+              updatedPoints.push({ ...closestOld, x: newPoint.x, y: newPoint.y });
+              newPointIdMap.set(newPoint.id, closestOld.id);
+            } else {
+              updatedPoints.push(newPoint);
+            }
+          }
+          
+          // Match lines
+          const updatedLines: Line[] = [...nonProjLines];
+          for (const newLine of projectedLines) {
+            const mappedP1 = newPointIdMap.get(newLine.p1) || newLine.p1;
+            const mappedP2 = newPointIdMap.get(newLine.p2) || newLine.p2;
+            
+            // Try to find existing line with same endpoints
+            const oldLine = oldProjLines.find(l => 
+              (l.p1 === mappedP1 && l.p2 === mappedP2) || (l.p1 === mappedP2 && l.p2 === mappedP1)
+            );
+            
+            if (oldLine) {
+              updatedLines.push({ ...oldLine, p1: mappedP1, p2: mappedP2 });
+            } else {
+              updatedLines.push({ ...newLine, p1: mappedP1, p2: mappedP2 });
+            }
+          }
+          
+          // Update the feature
+          updated[idx] = {
+            ...updated[idx],
+            sketch: {
+              ...updated[idx].sketch,
+              points: updatedPoints,
+              lines: updatedLines,
+            },
+            transform: localToWorld.toArray(),
+            faceSelectionData: {
+              point: newFaceCentroid.toArray() as [number, number, number],
+              normal: normal.toArray() as [number, number, number],
+            },
+            projectionLastUpdated: now,
+            lastModified: now,
+          };
+          
+          console.log(`✓ Auto-updated projection for ${feature.name}`);
+        }
+        
+        return updated;
+      });
+      
+      // Reset the flag after state update completes
+      setTimeout(() => {
+        isAutoUpdatingRef.current = false;
+      }, 100);
+    }).catch(err => {
+      console.error("Failed to auto-update projections:", err);
+      isAutoUpdatingRef.current = false;
+    });
+  }, [features]); // Dependency: features
+
+  const handleSaveProject = () => {
+    const project = {
+      features,
+      state, // Current active sketch state
+      editingFeatureId,
+      currentTransform,
+    };
+    localStorage.setItem("estrudo_project", JSON.stringify(project));
+    alert("Project saved to local storage!");
+  };
+
+  const handleLoadProject = () => {
+    const saved = localStorage.getItem("estrudo_project");
+    if (saved) {
+      try {
+        const project = JSON.parse(saved);
+        setFeatures(project.features || []);
+        setState(project.state || INITIAL_STATE);
+        setEditingFeatureId(project.editingFeatureId || null);
+        setCurrentTransform(project.currentTransform);
+        setPast([]);
+        setFuture([]);
+        setViewMode("3D");
+        alert("Project loaded from local storage!");
+      } catch (e) {
+        console.error("Failed to load project", e);
+        alert("Failed to load project from local storage.");
+      }
+    } else {
+      alert("No saved project found.");
+    }
   };
 
   return (
@@ -1062,6 +1654,8 @@ const App: React.FC = () => {
         onEditFeature={handleLoadFeature}
         onDeleteFeature={handleDeleteFeature}
         onAutoIntersection={handleAutoIntersection}
+        onSaveProject={handleSaveProject}
+        onLoadProject={handleLoadProject}
       />
 
       <div className="flex-1 flex flex-col relative min-w-0 h-full overflow-hidden">
@@ -1521,13 +2115,19 @@ const App: React.FC = () => {
                 <ThreeView
                   state={state}
                   features={features.filter((f) => f.id !== editingFeatureId)}
+                  allFeatures={features}
                   currentTransform={currentTransform}
                   initialFeatureParams={editingFeature}
                   onCommitExtrusion={handleCommitFeature}
                   onUpdateFeatureParams={handleUpdateFeatureParams}
                   onSketchOnFace={handleSketchOnFace}
+                  onReimportFaceEdges={handleReimportFaceEdges}
                   onClose={() => setViewMode("2D")}
                   onEditFeature={handleLoadFeature}
+                  onFeatureShapesReady={(shapes) => {
+                    featureShapesRef.current = shapes;
+                  }}
+                  onBuildComplete={handleAutoUpdateProjections}
                 />
               </div>
             )}

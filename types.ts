@@ -83,4 +83,18 @@ export interface Feature {
   // Revolve Params
   revolveAngle?: number; // In degrees (360 default)
   revolveAxisId?: string; // ID of the line used as axis
+  
+  // Parametric dependencies (for sketches on faces)
+  parentFeatureId?: string; // ID of feature this was sketched on
+  attachedToFaceIndex?: number; // Which face of parent feature (for re-projection)
+  projectionLastUpdated?: number; // Timestamp when projection was last updated
+  faceSelectionData?: { // Robust face descriptor for re-attachment
+    point: [number, number, number];
+    normal: [number, number, number];
+    faceIndex?: number; // Index of the face in parent shape's .faces array
+  };
+  
+  // Modification tracking
+  createdAt: number; // Timestamp when feature was created
+  lastModified: number; // Timestamp when feature was last modified
 }

@@ -1,19 +1,25 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import * as THREE from "three";
-import { Evaluator, Brush, SUBTRACTION, ADDITION } from "three-bvh-csg";
 import type { Feature } from "../../types";
 import { clearThreeGroup } from "./threeUtils";
-import {
-  generateGeometryForFeature,
-  getShapesFromSketch,
-} from "./sketchGeometry";
+import { createReplicadProfiles } from "./replicadUtils";
+import { generateRevolveGeometry, getShapesFromSketch } from "./sketchGeometry";
+import { initReplicad } from "../../services/replicad";
+import { replicadToThree } from "./replicadThreeUtils";
+import { revolution } from "replicad";
 
 type UseHistoryCSGParams = {
   features: Feature[];
   historyGroupRef: MutableRefObject<THREE.Group | null>;
-  brushCache: MutableRefObject<WeakMap<Feature, Brush>>;
+  brushCache: MutableRefObject<Map<string, {
+    shape: any;
+    signature: string;
+  }>>;
   activeAxisId: string | null;
   fitView: () => void;
+  onLastResultShapeReady?: (shape: any) => void;
+  onFeatureShapesReady?: (shapesByFeatureId: Map<string, any>) => void;
+  onBuildComplete?: () => void;
 };
 
 export const useHistoryCSG = ({
@@ -22,96 +28,360 @@ export const useHistoryCSG = ({
   brushCache,
   activeAxisId,
   fitView,
+  onLastResultShapeReady,
+  onFeatureShapesReady,
+  onBuildComplete,
 }: UseHistoryCSGParams) => {
   useEffect(() => {
-    if (!historyGroupRef.current) return;
-    const group = historyGroupRef.current;
+    let active = true;
 
-    clearThreeGroup(group);
+    const buildGeometry = async () => {
+      if (!historyGroupRef.current) return;
+      const group = historyGroupRef.current;
 
-    if (features.length === 0) return;
+      // Ensure Replicad is ready
+      await initReplicad();
+      if (!active) return;
 
-    const evaluator = new Evaluator();
-    let resultBrush: Brush | null = null;
+      clearThreeGroup(group);
+      if (features.length === 0) {
+        if (onLastResultShapeReady) onLastResultShapeReady(null);
+        return;
+      }
 
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xe5e7eb,
-      roughness: 0.5,
-      metalness: 0.1,
-      side: THREE.DoubleSide,
-    });
+      let resultShape: any = null;
 
-    features.forEach((feature) => {
-      let brush = brushCache.current.get(feature);
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xe5e7eb,
+        roughness: 0.5,
+        metalness: 0.1,
+        side: THREE.DoubleSide,
+      });
 
-      if (!brush) {
-        let actualDepth = feature.extrusionDepth;
-        let zOffset = 0;
+      // Track if any upstream feature was rebuilt, forcing later features to rebuild
+      let upstreamDirty = false;
+      
+      // Track all individual feature shapes (before booleans) for face extraction
+      const featureShapesMap = new Map<string, any>();
 
-        if (feature.operation === "CUT" && feature.featureType === "EXTRUDE") {
-          const overlap = 1.0;
-          if (feature.throughAll) {
-            actualDepth = 50000;
-            zOffset = -50000 + overlap;
-          } else {
-            actualDepth = feature.extrusionDepth + overlap;
-            zOffset = -feature.extrusionDepth;
+      for (const feature of features) {
+        // Generate a signature for the feature to detect changes
+        const signature = JSON.stringify({
+          id: feature.id,
+          featureType: feature.featureType,
+          operation: feature.operation,
+          extrusionDepth: feature.extrusionDepth,
+          revolveAngle: feature.revolveAngle,
+          revolveAxisId: feature.revolveAxisId,
+          transform: feature.transform,
+          lastModified: feature.lastModified,
+          // Light-weight sketch signature
+          sketch: {
+            points: feature.sketch.points.length,
+            lines: feature.sketch.lines.length,
+            circles: feature.sketch.circles.length,
+            arcs: feature.sketch.arcs?.length || 0,
+            constraints: feature.sketch.constraints.length,
           }
-        }
-
-        const shapes = getShapesFromSketch(feature.sketch, {
-          axisLineId: activeAxisId,
         });
-        const geom = generateGeometryForFeature(
-          feature.featureType,
-          shapes,
-          actualDepth,
-          feature.revolveAngle || 360,
-          feature.revolveAxisId,
-          feature.sketch
-        );
 
-        if (geom) {
-          if (
-            feature.operation === "CUT" &&
-            feature.featureType === "EXTRUDE"
-          ) {
-            geom.translate(0, 0, zOffset);
-          }
+        const cached = brushCache.current.get(feature.id);
+        let featureShape: any;
 
-          brush = new (Brush as any)(geom, material) as Brush;
-          if (feature.transform)
-            brush.applyMatrix4(
-              new THREE.Matrix4().fromArray(feature.transform)
-            );
-          brush.updateMatrixWorld();
-
-          (brush as any).userData = { featureId: feature.id };
-          brushCache.current.set(feature, brush);
-        }
-      }
-
-      if (brush) {
-        if (!resultBrush) {
-          resultBrush = brush;
+        if (cached && cached.signature === signature && !upstreamDirty) {
+          // Cache hit and safe to reuse
+          featureShape = cached.shape;
+          // console.log(`Cache hit for feature ${feature.name}`);
         } else {
-          if (feature.operation === "CUT") {
-            resultBrush = evaluator.evaluate(resultBrush, brush, SUBTRACTION);
+          // Cache miss or forced rebuild
+          console.log(`Rebuilding feature ${feature.name} (dirty=${upstreamDirty}, reason=${!cached ? 'no-cache' : cached.signature !== signature ? 'signature-mismatch' : 'upstream-change'})`);
+          
+          const drawings = createReplicadProfiles(feature.sketch, {
+            axisLineId: activeAxisId,
+          });
+
+          console.log(`Created ${drawings.length} drawings`);
+          if (drawings.length === 0) {
+            console.warn(`No drawings created for feature ${feature.name}, skipping`);
+            continue;
+          }
+
+          // Handle holes by sorting by area and checking containment
+          // This is a simplified version of the logic in sketchGeometry.ts
+          const drawingData = drawings.map(d => {
+            const bbox = d.boundingBox;
+            const [[xMin, yMin], [xMax, yMax]] = bbox.bounds;
+            const area = (xMax - xMin) * (yMax - yMin);
+            return { drawing: d, area, xMin, xMax, yMin, yMax };
+          });
+          drawingData.sort((a, b) => b.area - a.area);
+
+          console.log(`Feature ${feature.name}: Processing ${drawingData.length} drawings`);
+          drawingData.forEach((d, i) => {
+            console.log(`  Drawing ${i}: area=${d.area.toFixed(2)}, bounds=[${d.xMin.toFixed(2)},${d.yMin.toFixed(2)} to ${d.xMax.toFixed(2)},${d.yMax.toFixed(2)}]`);
+          });
+
+          let combinedDrawing = drawingData[0].drawing;
+          for (let i = 1; i < drawingData.length; i++) {
+            const current = drawingData[i];
+            const parent = drawingData.find((p, idx) => idx < i && 
+              current.xMin > p.xMin && current.xMax < p.xMax &&
+              current.yMin > p.yMin && current.yMax < p.yMax
+            );
+
+            if (parent) {
+              console.log(`  Drawing ${i} is inside drawing ${drawingData.indexOf(parent)}, cutting`);
+              combinedDrawing = combinedDrawing.cut(current.drawing);
+            } else {
+              console.log(`  Drawing ${i} is separate, fusing`);
+              combinedDrawing = combinedDrawing.fuse(current.drawing);
+            }
+          }
+
+          console.log(`Creating sketch from combined drawing`);
+          const sketch = combinedDrawing.sketchOnPlane();
+
+          let currentFeatureShape: any;
+
+          if (feature.featureType === "EXTRUDE") {
+            let actualDepth = feature.extrusionDepth;
+            let zOffset = 0;
+            
+            if (feature.operation === "CUT") {
+              const overlap = 1.0;
+              if (feature.throughAll) {
+                actualDepth = 1000;
+                zOffset = overlap;
+              } else {
+                actualDepth = feature.extrusionDepth + overlap;
+                zOffset = overlap;
+              }
+              currentFeatureShape = sketch.extrude(-actualDepth).translateZ(zOffset);
+            } else {
+              currentFeatureShape = sketch.extrude(actualDepth);
+            }
+          } else if (feature.featureType === "REVOLVE") {
+            // Find the axis line and its position
+            let axisVector: [number, number, number] = [0, 1, 0];
+            let axisOrigin: [number, number] = [0, 0];
+            const axisId = feature.revolveAxisId || activeAxisId;
+            const axisLine = feature.sketch.lines.find(l => l.id === axisId);
+            
+            if (axisLine) {
+              const p1 = feature.sketch.points.find(p => p.id === axisLine.p1);
+              const p2 = feature.sketch.points.find(p => p.id === axisLine.p2);
+              if (p1 && p2) {
+                axisOrigin = [p1.x, p1.y];
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const len = Math.sqrt(dx*dx + dy*dy);
+                if (len > 1e-6) {
+                  axisVector = [dx/len, dy/len, 0];
+                }
+              }
+            }
+            
+            console.log(`Revolving around axis: [${axisVector.join(', ')}] at origin [${axisOrigin.join(', ')}]`);
+            console.log(`Sketch has ${feature.sketch.circles.length} circles, ${feature.sketch.lines.length} lines, ${feature.sketch.arcs?.length || 0} arcs`);
+            console.log(`Axis line ID: ${axisId}`);
+            
+            // Check if the axis vector is valid (not zero length)
+            const axisLen = Math.sqrt(axisVector[0]**2 + axisVector[1]**2 + axisVector[2]**2);
+            if (axisLen < 1e-6) {
+              console.error(`Revolve axis has zero length, using default Y axis`);
+              axisVector = [0, 1, 0];
+            }
+            
+            // Translate the drawing so the axis passes through the origin
+            const translatedDrawing = combinedDrawing.translate(-axisOrigin[0], -axisOrigin[1]);
+            const translatedSketch = translatedDrawing.sketchOnPlane();
+            
+            // Log the translated drawing info before revolve
+            const bounds = translatedDrawing.boundingBox.bounds;
+            console.log(`Translated drawing bounds:`, bounds);
+            const [[xMin, yMin], [xMax, yMax]] = bounds;
+            
+            // Check if profile crosses the revolve axis
+            // For a vertical axis (0, ±1, 0), the axis is at X=0
+            // For a horizontal axis (±1, 0, 0), the axis is at Y=0
+            const isVerticalAxis = Math.abs(axisVector[0]) < 0.01 && Math.abs(axisVector[1]) > 0.99;
+            const isHorizontalAxis = Math.abs(axisVector[0]) > 0.99 && Math.abs(axisVector[1]) < 0.01;
+            
+            if (isVerticalAxis && xMin < -0.001 && xMax > 0.001) {
+              console.error(`ERROR: Profile crosses the vertical revolve axis!`);
+              console.error(`Profile X range: [${xMin.toFixed(2)}, ${xMax.toFixed(2)}] crosses X=0`);
+              console.error(`Replicad cannot revolve profiles that cross the axis`);
+              console.error(`Please ensure your profile is entirely on one side of the axis`);
+              continue;
+            }
+            
+            if (isHorizontalAxis && yMin < -0.001 && yMax > 0.001) {
+              console.error(`ERROR: Profile crosses the horizontal revolve axis!`);
+              console.error(`Profile Y range: [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] crosses Y=0`);
+              console.error(`Replicad cannot revolve profiles that cross the axis`);
+              console.error(`Please ensure your profile is entirely on one side of the axis`);
+              continue;
+            }
+            
+            console.log(`Calling revolution() with angle: ${feature.revolveAngle || 360}`);
+            
+            // Revolve around the axis (now passing through origin)
+            // @ts-ignore
+            const face = translatedSketch.face();
+            let revolvedShape = revolution(face, [0, 0, 0], axisVector, feature.revolveAngle || 360);
+            
+            // Translate back to original position
+            currentFeatureShape = revolvedShape.translate(axisOrigin[0], axisOrigin[1], 0);
+            console.log(`Revolve succeeded`);
+          }
+
+          featureShape = currentFeatureShape;
+          
+          // Apply the feature's transformation matrix
+          const matrix = new THREE.Matrix4();
+          matrix.fromArray(feature.transform);
+          
+          // Check if this is not the default identity matrix
+          const isIdentity = feature.transform.every((v, i) => 
+            (i % 5 === 0 && Math.abs(v - 1) < 1e-10) || (i % 5 !== 0 && Math.abs(v) < 1e-10)
+          );
+          
+          console.log(`Feature ${feature.name} transform matrix:`, feature.transform);
+          console.log(`Is identity: ${isIdentity}`);
+          
+          if (!isIdentity) {
+            // The transformation matrix transforms points from local sketch space to world space
+            // For Replicad, we need to transform the shape the same way
+            
+            // Extract basis vectors and origin from the matrix
+            const xAxis = new THREE.Vector3(feature.transform[0], feature.transform[1], feature.transform[2]);
+            const yAxis = new THREE.Vector3(feature.transform[4], feature.transform[5], feature.transform[6]);
+            const zAxis = new THREE.Vector3(feature.transform[8], feature.transform[9], feature.transform[10]);
+            const origin = new THREE.Vector3(feature.transform[12], feature.transform[13], feature.transform[14]);
+            
+            console.log(`  Origin: [${origin.x}, ${origin.y}, ${origin.z}]`);
+            console.log(`  X-axis: [${xAxis.x}, ${xAxis.y}, ${xAxis.z}]`);
+            console.log(`  Y-axis: [${yAxis.x}, ${yAxis.y}, ${yAxis.z}]`);
+            console.log(`  Z-axis: [${zAxis.x}, ${zAxis.y}, ${zAxis.z}]`);
+            
+            // Decompose for rotation
+            const position = new THREE.Vector3();
+            const quaternion = new THREE.Quaternion();
+            const scale = new THREE.Vector3();
+            matrix.decompose(position, quaternion, scale);
+            
+            // Convert quaternion to axis-angle for Replicad
+            const angle = 2 * Math.acos(Math.min(1, Math.max(-1, quaternion.w)));
+            const s = Math.sqrt(Math.max(0, 1 - quaternion.w * quaternion.w));
+            let axis: [number, number, number] = [0, 0, 1];
+            if (s > 0.001) {
+              axis = [quaternion.x / s, quaternion.y / s, quaternion.z / s];
+            }
+            
+            const angleDeg = angle * 180 / Math.PI;
+            console.log(`  Rotation: ${angleDeg.toFixed(2)} degrees around axis [${axis.map(v => v.toFixed(3)).join(', ')}]`);
+            
+            // Apply rotation first (around origin), then translation
+            if (angleDeg > 0.1) {
+              featureShape = featureShape.rotate(angleDeg, [0, 0, 0], axis);
+              console.log(`  Applied rotation`);
+            }
+            
+            // Then translate
+            if (position.length() > 0.001) {
+              featureShape = featureShape.translate(position.x, position.y, position.z);
+              console.log(`  Applied translation to [${position.x}, ${position.y}, ${position.z}]`);
+            }
+            
+            // Log bounding box after transformation
+            const bbox = featureShape.boundingBox;
+            console.log(`  After transform bounding box:`, {
+              min: [bbox.center[0] - bbox.width/2, bbox.center[1] - bbox.height/2, bbox.center[2] - bbox.depth/2],
+              max: [bbox.center[0] + bbox.width/2, bbox.center[1] + bbox.height/2, bbox.center[2] + bbox.depth/2]
+            });
+          }
+          
+          // Update cache
+          brushCache.current.set(feature.id, { shape: featureShape, signature });
+          upstreamDirty = true; // Mark downstream as dirty
+        }
+        
+        // Store this feature's shape for later face extraction
+        if (featureShape) {
+          featureShapesMap.set(feature.id, featureShape);
+        }
+
+        if (featureShape) {
+          if (!resultShape) {
+            resultShape = featureShape;
+            const bb = featureShape.boundingBox;
+            console.log(`First feature ${feature.name}, bounding box:`, {
+              min: [bb.center[0] - bb.width/2, bb.center[1] - bb.height/2, bb.center[2] - bb.depth/2],
+              max: [bb.center[0] + bb.width/2, bb.center[1] + bb.height/2, bb.center[2] + bb.depth/2]
+            });
           } else {
-            resultBrush = evaluator.evaluate(resultBrush, brush, ADDITION);
+            try {
+              console.log(`Performing ${feature.operation} operation for feature ${feature.name}`);
+              const baseBB = resultShape.boundingBox;
+              const featureBB = featureShape.boundingBox;
+              console.log(`  Base shape bounding box:`, {
+                min: [baseBB.center[0] - baseBB.width/2, baseBB.center[1] - baseBB.height/2, baseBB.center[2] - baseBB.depth/2],
+                max: [baseBB.center[0] + baseBB.width/2, baseBB.center[1] + baseBB.height/2, baseBB.center[2] + baseBB.depth/2]
+              });
+              console.log(`  Feature shape bounding box:`, {
+                min: [featureBB.center[0] - featureBB.width/2, featureBB.center[1] - featureBB.height/2, featureBB.center[2] - featureBB.depth/2],
+                max: [featureBB.center[0] + featureBB.width/2, featureBB.center[1] + featureBB.height/2, featureBB.center[2] + featureBB.depth/2]
+              });
+              
+              if (feature.operation === "CUT") {
+                resultShape = resultShape.cut(featureShape);
+                console.log(`  Cut completed, result type:`, resultShape.constructor.name);
+                const resultBB = resultShape.boundingBox;
+                console.log(`  Result bounding box:`, {
+                  min: [resultBB.center[0] - resultBB.width/2, resultBB.center[1] - resultBB.height/2, resultBB.center[2] - resultBB.depth/2],
+                  max: [resultBB.center[0] + resultBB.width/2, resultBB.center[1] + resultBB.height/2, resultBB.center[2] + resultBB.depth/2]
+                });
+              } else {
+                resultShape = resultShape.fuse(featureShape);
+                console.log(`  Fuse completed`);
+              }
+            } catch (e) {
+              console.error(`Boolean operation ${feature.operation} failed for feature ${feature.name}:`, e);
+            }
           }
         }
       }
-    });
 
-    if (resultBrush) {
-      const mesh = resultBrush as THREE.Mesh;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.updateMatrixWorld(true);
-      group.add(mesh);
-    }
+      if (resultShape && active) {
+        if (onLastResultShapeReady) onLastResultShapeReady(resultShape);
+        if (onFeatureShapesReady) onFeatureShapesReady(featureShapesMap);
+        
+        try {
+          // Use very low quality (higher tolerance) for history view mesh
+          // This keeps the UI responsive. High quality is only for export.
+          const geometry = replicadToThree(resultShape, 2.0, 0.8);
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          // Tag the mesh with the ID of the feature that produced it (the last one)
+          mesh.userData.featureId = features[features.length - 1].id;
+          group.add(mesh);
+          setTimeout(fitView, 50);
+        } catch (e) {
+          console.error("Failed to generate mesh from Replicad", e);
+        }
+      }
+      
+      // Notify that build is complete
+      if (onBuildComplete) {
+        onBuildComplete();
+      }
+    };
 
-    setTimeout(fitView, 50);
+    buildGeometry();
+
+    return () => {
+      active = false;
+    };
   }, [activeAxisId, brushCache, features, fitView, historyGroupRef]);
 };

@@ -7,12 +7,13 @@ import React, {
 } from "react";
 import * as THREE from "three";
 import { STLExporter } from "three/addons/exporters/STLExporter.js";
-import type { Brush } from "three-bvh-csg";
 import { SketchState, Feature, Line, Arc, Circle, Point } from "../types";
 import {
   generateGeometryForFeature,
+  generateGeometryForFeatureReplicad,
   getShapesFromSketch,
 } from "./ThreeView/sketchGeometry";
+import { replicadToThree } from "./ThreeView/replicadThreeUtils";
 import {
   pickFaceData,
   pickSketchElementId,
@@ -25,41 +26,56 @@ import { useSketchVisualization } from "./ThreeView/useSketchVisualization";
 import { useAxisVisualization } from "./ThreeView/useAxisVisualization";
 import { usePreviewMesh } from "./ThreeView/usePreviewMesh";
 import { useFaceHighlight } from "./ThreeView/useFaceHighlight";
+import { shouldShowProjectionWarning } from "../utils/projectionUtils";
+import { groupConnectedEdges, detectCircularSequence } from "../utils/circleDetection";
 
 interface ThreeViewProps {
-  state: SketchState;
+  state: AppState;
   features?: Feature[];
-  currentTransform?: number[]; // Matrix4 array for current sketch plane
-  initialFeatureParams?: Feature;
+  allFeatures?: Feature[];
+  currentTransform: THREE.Matrix4 | null;
+  initialFeatureParams?: InitialFeatureParams;
   onCommitExtrusion: (
-    depth: number,
-    operation: "NEW" | "CUT",
-    throughAll: boolean,
-    featureType: "EXTRUDE" | "REVOLVE",
-    revolveAngle?: number,
-    revolveAxisId?: string
+    params: Omit<FeatureParams, "id">,
+    sketch?: ConstrainedSketch,
+    attachedToFaceIndex?: number
   ) => void;
-  onUpdateFeatureParams?: (id: string, updates: Partial<Feature>) => void;
+  onUpdateFeatureParams?: (featureId: string, params: FeatureParams) => void;
   onSketchOnFace?: (
     lines: Line[],
     points: Point[],
     transform: number[],
     arcs: Arc[],
-    circles: Circle[]
+    circles: Circle[],
+    parentFeatureId?: string,
+    faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
+  ) => void;
+  onReimportFaceEdges?: (
+    newLines: Line[],
+    newPoints: Point[],
+    transform: number[],
+    newCircles?: Circle[],
+    newArcs?: Arc[]
   ) => void;
   onClose: () => void;
   onEditFeature?: (id: string) => void;
+  onFeatureShapesReady?: (shapesByFeatureId: Map<string, any>) => void;
+  onBuildComplete?: () => void;
 }
 
 const ThreeView: React.FC<ThreeViewProps> = ({
   state,
   features = [],
+  allFeatures = [],
   currentTransform,
   initialFeatureParams,
   onCommitExtrusion,
   onUpdateFeatureParams,
   onSketchOnFace,
+  onReimportFaceEdges,
   onClose,
+  onFeatureShapesReady,
+  onBuildComplete,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
 
@@ -81,11 +97,16 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   );
   const [isConfigOpen, setIsConfigOpen] = useState(!!initialFeatureParams);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [previewGeometry, setPreviewGeometry] = useState<THREE.BufferGeometry | null>(null);
+  const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
 
   // Axis Selection State
   const [activeAxisId, setActiveAxisId] = useState<string | null>(
     initialFeatureParams?.revolveAxisId || null
   );
+
+  const lastResultShapeRef = useRef<any>(null);
+  const featureShapesMapRef = useRef<Map<string, any>>(new Map());
 
   // Selection & Interaction State
   const [selectedSketchElements, setSelectedSketchElements] = useState<
@@ -94,6 +115,9 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const [hoveredSketchElement, setHoveredSketchElement] = useState<
     string | null
   >(null);
+  
+  // Re-import mode for updating projected face edges
+  const [isReimportMode, setIsReimportMode] = useState(false);
 
   const [selectedFaceData, setSelectedFaceData] = useState<{
     point: THREE.Vector3;
@@ -101,6 +125,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     boundaryEdges: THREE.Line3[];
     faceVertices: Float32Array;
     matrixWorld: THREE.Matrix4;
+    featureId?: string;
   } | null>(null);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -116,8 +141,11 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
   const requestRef = useRef<number>(0);
 
-  // Cache for feature brushes to avoid rebuilding BVH for unchanged features
-  const brushCache = useRef<WeakMap<Feature, Brush>>(new WeakMap());
+  // Cache for feature shapes to avoid rebuilding for unchanged features
+  const brushCache = useRef<Map<string, {
+    shape: any;
+    signature: string;
+  }>>(new Map());
 
   // Auto-Center Camera Logic
   const fitView = useCallback(() => {
@@ -243,11 +271,19 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // --- Geometry Helpers ---
 
   useHistoryCSG({
-    features,
+    features: features || [],
     historyGroupRef,
     brushCache,
     activeAxisId,
     fitView,
+    onLastResultShapeReady: (shape) => {
+      lastResultShapeRef.current = shape;
+    },
+    onFeatureShapesReady: (shapes) => {
+      featureShapesMapRef.current = shapes;
+      if (onFeatureShapesReady) onFeatureShapesReady(shapes);
+    },
+    onBuildComplete,
   });
 
   useSketchVisualization({
@@ -284,65 +320,84 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     });
   }, [selectedSketchElements, hoveredSketchElement]);
 
-  // 3. Render Active Sketch Extrusion/Revolve Preview (Solid)
-  const { geometry: previewGeometry, error: previewError } = useMemo(() => {
-    if (!isConfigOpen) return { geometry: null, error: null };
+  // 3. Render Active Sketch Extrusion/Revolve Preview (Solid) - Using Replicad with debouncing
+  useEffect(() => {
+    let active = true;
+    let timeoutId: NodeJS.Timeout;
 
-    if (state.lines.length === 0 && state.circles.length === 0) {
-      return { geometry: null, error: null };
-    }
-
-    const shapes = getShapesFromSketch(state, {
-      allowedIds:
-        selectedSketchElements.length > 0 ? selectedSketchElements : undefined,
-      axisLineId: activeAxisId,
-    });
-    if (shapes.length === 0) {
-      return {
-        geometry: null,
-        error: "No closed profiles found in selection.",
-      };
-    }
-
-    let depth = localDepth;
-    let zOffset = 0;
-
-    if (featureType === "EXTRUDE" && operation === "CUT") {
-      const overlap = 1.0;
-      if (throughAll) {
-        depth = 1000;
-        zOffset = -1000 + overlap;
-      } else {
-        depth = localDepth + overlap;
-        zOffset = -localDepth;
+    const generatePreview = async () => {
+      if (!isConfigOpen) {
+        setPreviewGeometry(null);
+        setErrorMsg(null);
+        setIsGeneratingPreview(false);
+        return;
       }
-    }
 
-    if (featureType === "REVOLVE" && !activeAxisId) {
-      return { geometry: null, error: "No axis line selected." };
-    }
+      if (state.lines.length === 0 && state.circles.length === 0) {
+        setPreviewGeometry(null);
+        setErrorMsg(null);
+        setIsGeneratingPreview(false);
+        return;
+      }
 
-    const geom = generateGeometryForFeature(
-      featureType,
-      shapes,
-      depth,
-      revolveAngle,
-      activeAxisId || undefined,
-      state
-    );
+      // Check if we have closed profiles
+      const shapes = getShapesFromSketch(state, {
+        allowedIds:
+          selectedSketchElements.length > 0 ? selectedSketchElements : undefined,
+        axisLineId: activeAxisId,
+      });
+      if (shapes.length === 0) {
+        setPreviewGeometry(null);
+        setErrorMsg("No closed profiles found in selection.");
+        setIsGeneratingPreview(false);
+        return;
+      }
 
-    if (!geom) {
-      return {
-        geometry: null,
-        error: "Failed to generate geometry. Check profile/axis.",
-      };
-    }
+      if (featureType === "REVOLVE" && !activeAxisId) {
+        setPreviewGeometry(null);
+        setErrorMsg("No axis line selected.");
+        setIsGeneratingPreview(false);
+        return;
+      }
 
-    if (featureType === "EXTRUDE" && operation === "CUT") {
-      geom.translate(0, 0, zOffset);
-    }
+      setIsGeneratingPreview(true);
 
-    return { geometry: geom as THREE.BufferGeometry, error: null };
+      // Generate geometry using Replicad with lower quality for faster preview
+      const geometry = await generateGeometryForFeatureReplicad(
+        featureType,
+        state,
+        localDepth,
+        revolveAngle,
+        activeAxisId || undefined,
+        operation,
+        throughAll,
+        selectedSketchElements.length > 0 ? selectedSketchElements : undefined,
+        true // isPreview = true for faster generation
+      );
+
+      if (!active) return;
+
+      if (!geometry) {
+        setPreviewGeometry(null);
+        setErrorMsg("Failed to generate geometry. Check profile/axis.");
+        setIsGeneratingPreview(false);
+        return;
+      }
+
+      setPreviewGeometry(geometry);
+      setErrorMsg(null);
+      setIsGeneratingPreview(false);
+    };
+
+    // Debounce the preview generation by 300ms
+    timeoutId = setTimeout(() => {
+      generatePreview();
+    }, 300);
+
+    return () => {
+      active = false;
+      clearTimeout(timeoutId);
+    };
   }, [
     state,
     localDepth,
@@ -356,8 +411,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   ]);
 
   useEffect(() => {
-    setErrorMsg(previewError);
-  }, [previewError]);
+    setErrorMsg(errorMsg);
+  }, [errorMsg]);
 
   useAxisVisualization({
     axisHelperGroupRef,
@@ -409,6 +464,197 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     setSelectedSketchElements([]);
     return true;
   }, []);
+  
+  // Face projection helper function
+  const projectFaceEdges = useCallback((faceData: {
+    boundaryEdges: THREE.Line3[];
+    normal: THREE.Vector3;
+    matrixWorld: THREE.Matrix4;
+  }) => {
+    const { boundaryEdges, normal, matrixWorld } = faceData;
+    if (boundaryEdges.length === 0) {
+      alert("Could not detect face boundary.");
+      throw new Error("No boundary edges");
+    }
+    const edge = boundaryEdges[0];
+    const originLocal = edge.start.clone();
+    const originWorld = originLocal.clone().applyMatrix4(matrixWorld);
+    const endWorld = edge.end.clone().applyMatrix4(matrixWorld);
+    const zAxis = normal.clone().normalize();
+    let xAxis = new THREE.Vector3()
+      .subVectors(endWorld, originWorld)
+      .normalize();
+    if (Math.abs(xAxis.dot(zAxis)) > 0.9) {
+      xAxis = new THREE.Vector3()
+        .crossVectors(zAxis, new THREE.Vector3(0, 1, 0))
+        .normalize();
+      if (xAxis.lengthSq() < 0.1)
+        xAxis = new THREE.Vector3()
+          .crossVectors(zAxis, new THREE.Vector3(1, 0, 0))
+          .normalize();
+    }
+    const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+    xAxis.crossVectors(yAxis, zAxis).normalize();
+    const localToWorld = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+    localToWorld.setPosition(originWorld);
+    const worldToLocal = localToWorld.clone().invert();
+    
+    // Transform edges to sketch coordinate system
+    const edgesInSketchSpace = boundaryEdges.map((edge) => {
+      const startWorld = edge.start.clone().applyMatrix4(matrixWorld);
+      const endWorld = edge.end.clone().applyMatrix4(matrixWorld);
+      const startSketch = startWorld.applyMatrix4(worldToLocal);
+      const endSketch = endWorld.applyMatrix4(worldToLocal);
+      return new THREE.Line3(startSketch, endSketch);
+    });
+
+    const projectedPoints: Point[] = [];
+    const projectedLines: Line[] = [];
+    const projectedCircles: Circle[] = [];
+    const projectedArcs: Arc[] = [];
+    
+    const findPoint = (x: number, y: number) =>
+      projectedPoints.find(
+        (p) => Math.abs(p.x - x) < 0.001 && Math.abs(p.y - y) < 0.001
+      );
+    
+    const getOrCreatePoint = (x: number, y: number): Point => {
+      let p = findPoint(x, y);
+      if (!p) {
+        p = {
+          id: `p_proj_${Math.random().toString(36).substr(2, 9)}`,
+          x,
+          y,
+          fixed: true,
+        };
+        projectedPoints.push(p);
+      }
+      return p;
+    };
+
+    // Group edges and detect circles/arcs
+    const edgeGroups = groupConnectedEdges(edgesInSketchSpace);
+    const usedEdges = new Set<THREE.Line3>();
+
+    for (const group of edgeGroups) {
+      const detection = detectCircularSequence(group);
+      
+      if (detection && detection.rmsError <= 0.1) {
+        // Found a circle or arc!
+        const centerPoint = getOrCreatePoint(detection.center.x, detection.center.y);
+        
+        if (detection.isFullCircle) {
+          // Create a construction circle
+          const circle = {
+            id: `c_proj_${Math.random().toString(36).substr(2, 9)}`,
+            center: centerPoint.id,
+            radius: detection.radius,
+            construction: true,
+          };
+          projectedCircles.push(circle);
+        } else if (detection.startAngle !== undefined && detection.endAngle !== undefined) {
+          // Create a construction arc
+          // Calculate start and end points on the arc
+          const startX = detection.center.x + detection.radius * Math.cos(detection.startAngle);
+          const startY = detection.center.y + detection.radius * Math.sin(detection.startAngle);
+          const endX = detection.center.x + detection.radius * Math.cos(detection.endAngle);
+          const endY = detection.center.y + detection.radius * Math.sin(detection.endAngle);
+          
+          const p1 = getOrCreatePoint(startX, startY);
+          const p2 = getOrCreatePoint(endX, endY);
+          
+          const arc = {
+            id: `a_proj_${Math.random().toString(36).substr(2, 9)}`,
+            center: centerPoint.id,
+            radius: detection.radius,
+            p1: p1.id,
+            p2: p2.id,
+            construction: true,
+          };
+          projectedArcs.push(arc);
+        }
+        
+        // Mark these edges as used (don't create line segments for them)
+        group.forEach(edge => usedEdges.add(edge));
+      }
+    }
+
+    // Create line segments for edges that weren't detected as circles/arcs
+    edgesInSketchSpace.forEach((edge) => {
+      if (usedEdges.has(edge)) return; // Skip edges that are part of circles/arcs
+      
+      const p1 = getOrCreatePoint(edge.start.x, edge.start.y);
+      const p2 = getOrCreatePoint(edge.end.x, edge.end.y);
+      
+      projectedLines.push({
+        id: `l_proj_${Math.random().toString(36).substr(2, 9)}`,
+        p1: p1.id,
+        p2: p2.id,
+        construction: true,
+      });
+    });
+    
+    return { 
+      projectedLines, 
+      projectedPoints, 
+      projectedCircles, 
+      projectedArcs, 
+      localToWorld 
+    };
+  }, []);
+  
+  const handleReimportFaceEdges = useCallback((faceData: {
+    boundaryEdges: THREE.Line3[];
+    normal: THREE.Vector3;
+    matrixWorld: THREE.Matrix4;
+    point?: THREE.Vector3; // Make optional to satisfy type check, though pickFaceData always provides it
+  }) => {
+    // Re-project the edges from the newly selected face
+    const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(faceData);
+    
+    // Pass everything back to App.tsx to update the sketch state
+    if (!onReimportFaceEdges) return;
+    
+    // We update the projectionLastUpdated timestamp implicitly in App.tsx when it saves this
+    onReimportFaceEdges(
+      projectedLines,
+      projectedPoints,
+      localToWorld.toArray(),
+      projectedCircles || [],
+      projectedArcs || []
+    );
+    
+    // If we are editing an existing feature, we should also update its parent link
+    // so it points to the new face we just picked
+    if (initialFeatureParams && onUpdateFeatureParams && selectedFaceData?.featureId && faceData.point) {
+         // Try to find the Replicad face index
+         let faceIndex: number | undefined;
+         if (selectedFaceData.featureId && featureShapesMapRef.current.has(selectedFaceData.featureId)) {
+           const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
+           try {
+             const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
+             faceIndex = findReplicadFaceIndex(parentShape, faceData.point, faceData.normal);
+           } catch (e) {
+             console.warn("Could not find face index during reimport:", e);
+           }
+         }
+         
+         // Also update the robust face descriptor
+         const faceDescriptor = {
+            point: faceData.point.toArray() as [number, number, number],
+            normal: faceData.normal.toArray() as [number, number, number],
+            faceIndex
+         };
+         
+         onUpdateFeatureParams(initialFeatureParams.id, {
+             parentFeatureId: selectedFaceData.featureId,
+             faceSelectionData: faceDescriptor,
+             projectionLastUpdated: Date.now() // Mark projection as fresh
+         });
+    }
+
+    setIsReimportMode(false);
+  }, [onReimportFaceEdges, projectFaceEdges, selectedFaceData, initialFeatureParams, onUpdateFeatureParams]);
 
   const onCanvasMouseMove = useCallback(
     (event: React.MouseEvent) => {
@@ -443,9 +689,24 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         !cameraRef.current
       )
         return;
-      if (isConfigOpen) return; // Don't pick if config is open
+      
+      // Allow clicks in reimport mode even if config is open
+      if (isConfigOpen && !isReimportMode) return;
 
       if (!setRayFromEvent(event)) return;
+
+      // If in reimport mode, only allow face picking
+      if (isReimportMode) {
+        const objectsToCheck = [...historyGroupRef.current.children];
+        raycasterRef.current.params.Line.threshold = 0.1;
+        const face = pickFaceData(raycasterRef.current, objectsToCheck);
+        if (face) {
+          // Face selected, trigger reimport immediately with the face data
+          handleReimportFaceEdges(face);
+          setSelectedFaceData(face);
+        }
+        return;
+      }
 
       // 1. Check for Sketch Elements
       const sketchId = tryPickSketchElement();
@@ -467,19 +728,41 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         setSelectedSketchElements([]);
       }
     },
-    [isConfigOpen, setRayFromEvent, tryPickFace, tryPickSketchElement]
+    [isConfigOpen, isReimportMode, setRayFromEvent, tryPickFace, tryPickSketchElement, handleReimportFaceEdges]
   );
 
   const handleExportSTL = () => {
-    const exporter = new STLExporter();
-    const result = exporter.parse(historyGroupRef.current!, { binary: true });
-    const blob = new Blob([result], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "model.stl";
-    link.click();
-    URL.revokeObjectURL(url);
+    if (!lastResultShapeRef.current) {
+      console.warn("No geometry to export");
+      return;
+    }
+
+    // Generate high-resolution mesh just for export
+    try {
+      // Final: tolerance=0.1, angularTolerance=0.1 (High quality)
+      const highResGeometry = replicadToThree(
+        lastResultShapeRef.current,
+        0.1,
+        0.1
+      );
+
+      const exportMesh = new THREE.Mesh(highResGeometry);
+      const exporter = new STLExporter();
+      const result = exporter.parse(exportMesh, { binary: true });
+      
+      const blob = new Blob([result], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "model.stl";
+      link.click();
+      URL.revokeObjectURL(url);
+      
+      // Cleanup the temporary geometry
+      highResGeometry.dispose();
+    } catch (error) {
+      console.error("Export failed:", error);
+    }
   };
 
   const handleCommit = () => {
@@ -514,81 +797,59 @@ const ThreeView: React.FC<ThreeViewProps> = ({
 
   const handleCreateSketchOnFace = () => {
     if (!selectedFaceData || !onSketchOnFace) return;
-    const { boundaryEdges, normal, matrixWorld } = selectedFaceData;
-    if (boundaryEdges.length === 0) {
-      alert("Could not detect face boundary.");
-      return;
-    }
-    const edge = boundaryEdges[0];
-    const originLocal = edge.start.clone();
-    const originWorld = originLocal.clone().applyMatrix4(matrixWorld);
-    const endWorld = edge.end.clone().applyMatrix4(matrixWorld);
-    const zAxis = normal.clone().normalize();
-    let xAxis = new THREE.Vector3()
-      .subVectors(endWorld, originWorld)
-      .normalize();
-    if (Math.abs(xAxis.dot(zAxis)) > 0.9) {
-      xAxis = new THREE.Vector3()
-        .crossVectors(zAxis, new THREE.Vector3(0, 1, 0))
-        .normalize();
-      if (xAxis.lengthSq() < 0.1)
-        xAxis = new THREE.Vector3()
-          .crossVectors(zAxis, new THREE.Vector3(1, 0, 0))
-          .normalize();
-    }
-    const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
-    xAxis.crossVectors(yAxis, zAxis).normalize();
-    const localToWorld = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
-    localToWorld.setPosition(originWorld);
-    const worldToLocal = localToWorld.clone().invert();
-    const projectedPoints: Point[] = [];
-    const projectedLines: Line[] = [];
-    const findPoint = (x: number, y: number) =>
-      projectedPoints.find(
-        (p) => Math.abs(p.x - x) < 0.001 && Math.abs(p.y - y) < 0.001
-      );
-    boundaryEdges.forEach((edge) => {
-      const startWorld = edge.start.clone().applyMatrix4(matrixWorld);
-      const endWorld = edge.end.clone().applyMatrix4(matrixWorld);
-      const startSketch = startWorld.applyMatrix4(worldToLocal);
-      const endSketch = endWorld.applyMatrix4(worldToLocal);
-      let p1 = findPoint(startSketch.x, startSketch.y);
-      if (!p1) {
-        p1 = {
-          id: `p_proj_${Math.random().toString(36).substr(2, 9)}`,
-          x: startSketch.x,
-          y: startSketch.y,
-          fixed: true,
-        };
-        projectedPoints.push(p1);
+    const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(selectedFaceData);
+    
+    // Try to find the Replicad face index if we have the parent shape
+    let faceIndex: number | undefined;
+    if (selectedFaceData.featureId && featureShapesMapRef.current.has(selectedFaceData.featureId)) {
+      const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
+      
+      // Import and use the face index matching utility
+      import('../utils/faceIndexMatching').then(({ findReplicadFaceIndex }) => {
+        const matchedIndex = findReplicadFaceIndex(
+          parentShape,
+          selectedFaceData.point,
+          selectedFaceData.normal
+        );
+        
+        if (matchedIndex !== undefined) {
+          console.log(`Matched face to Replicad index: ${matchedIndex}`);
+        }
+      }).catch(console.error);
+      
+      // For now, do synchronous version - we'll refactor if needed
+      try {
+        const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
+        faceIndex = findReplicadFaceIndex(parentShape, selectedFaceData.point, selectedFaceData.normal);
+      } catch (e) {
+        console.warn("Could not find face index:", e);
       }
-      let p2 = findPoint(endSketch.x, endSketch.y);
-      if (!p2) {
-        p2 = {
-          id: `p_proj_${Math.random().toString(36).substr(2, 9)}`,
-          x: endSketch.x,
-          y: endSketch.y,
-          fixed: true,
-        };
-        projectedPoints.push(p2);
-      }
-      projectedLines.push({
-        id: `l_proj_${Math.random().toString(36).substr(2, 9)}`,
-        p1: p1.id,
-        p2: p2.id,
-        construction: true,
-      });
-    });
+    }
+    
+    // Extract robust face descriptor
+    const faceDescriptor = {
+      point: selectedFaceData.point.toArray() as [number, number, number],
+      normal: selectedFaceData.normal.toArray() as [number, number, number],
+      faceIndex
+    };
+
     onSketchOnFace(
       projectedLines,
       projectedPoints,
       localToWorld.toArray(),
-      [],
-      []
+      projectedArcs || [],
+      projectedCircles || [],
+      selectedFaceData.featureId, // Now we have the parent feature ID!
+      faceDescriptor
     );
   };
 
   const hasActiveSketch = state.lines.length > 0 || state.circles.length > 0;
+  
+  // Determine if warning should be shown
+  const showProjectionWarning = initialFeatureParams && allFeatures.length > 0
+    ? shouldShowProjectionWarning(initialFeatureParams, allFeatures)
+    : false;
 
   return (
     <div
@@ -614,7 +875,10 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         lines={state.lines}
         initialFeatureParams={initialFeatureParams}
         errorMsg={errorMsg}
+        isGeneratingPreview={isGeneratingPreview}
         selectedFaceData={selectedFaceData}
+        showProjectionWarning={showProjectionWarning}
+        isReimportMode={isReimportMode}
         onFitView={fitView}
         onExportSTL={handleExportSTL}
         onSetFeatureType={setFeatureType}
@@ -627,6 +891,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onCommit={handleCommit}
         onEditSketch={handleEditSketch}
         onCreateSketchOnFace={handleCreateSketchOnFace}
+        onStartReimport={() => setIsReimportMode(true)}
+        onCancelReimport={() => setIsReimportMode(false)}
       />
     </div>
   );
