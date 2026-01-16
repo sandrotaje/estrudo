@@ -961,13 +961,13 @@ const App: React.FC = () => {
         ? existingFeature?.name ||
           (operation === "CUT"
             ? "Cut"
-            : featureType === "REVOLVE"
+            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE"
             ? "Revolve"
             : "Extrude")
         : `${
             operation === "CUT"
               ? "Cut"
-              : featureType === "REVOLVE"
+              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE"
               ? "Revolve"
               : "Extrude"
           } ${features.length + 1}`,
