@@ -69,6 +69,7 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onStartReimport,
   onCancelReimport,
   hasFeatures,
+  onCommitSketchOnly,
   onNewSketchOnPlane,
 }) => {
   return (
