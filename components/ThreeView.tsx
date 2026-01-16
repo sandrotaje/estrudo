@@ -20,6 +20,7 @@ import {
   setRayFromMouseEvent,
 } from "./ThreeView/picking";
 import ThreeViewOverlay from "./ThreeView/Overlay";
+import PlaneSelector from "./ThreeView/PlaneSelector";
 import { useThreeScene } from "./ThreeView/useThreeScene";
 import { useHistoryCSG } from "./ThreeView/useHistoryCSG";
 import { useSketchVisualization } from "./ThreeView/useSketchVisualization";
@@ -58,6 +59,7 @@ interface ThreeViewProps {
     newArcs?: Arc[]
   ) => void;
   onClose: () => void;
+  onStartSketchOnPlane?: (transform: number[]) => void;
   onEditFeature?: (id: string) => void;
   onFeatureShapesReady?: (shapesByFeatureId: Map<string, any>) => void;
   onBuildComplete?: () => void;
@@ -74,6 +76,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   onSketchOnFace,
   onReimportFaceEdges,
   onClose,
+  onStartSketchOnPlane,
   onFeatureShapesReady,
   onBuildComplete,
 }) => {
@@ -118,6 +121,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   
   // Re-import mode for updating projected face edges
   const [isReimportMode, setIsReimportMode] = useState(false);
+  const [showPlaneSelector, setShowPlaneSelector] = useState(false);
 
   const [selectedFaceData, setSelectedFaceData] = useState<{
     point: THREE.Vector3;
@@ -893,7 +897,12 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onCreateSketchOnFace={handleCreateSketchOnFace}
         onStartReimport={() => setIsReimportMode(true)}
         onCancelReimport={() => setIsReimportMode(false)}
+        hasFeatures={features.length > 0}
+        onNewSketchOnPlane={() => setShowPlaneSelector(true)}
       />
+      {!hasActiveSketch && !initialFeatureParams && onStartSketchOnPlane && (showPlaneSelector || features.length === 0) && (
+        <PlaneSelector onSelectPlane={(transform) => { setShowPlaneSelector(false); onStartSketchOnPlane(transform); }} onCancel={() => setShowPlaneSelector(false)} />
+      )}
     </div>
   );
 };

@@ -32,6 +32,8 @@ type ThreeViewOverlayProps = {
   onCreateSketchOnFace: () => void;
   onStartReimport: () => void;
   onCancelReimport: () => void;
+  hasFeatures: boolean;
+  onNewSketchOnPlane?: () => void;
 };
 
 const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
@@ -65,6 +67,8 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onCreateSketchOnFace,
   onStartReimport,
   onCancelReimport,
+  hasFeatures,
+  onNewSketchOnPlane,
 }) => {
   return (
     <>
@@ -176,6 +180,22 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
         </div>
       )}
 
+
+      {/* New Sketch Button (When features exist but no active sketch) */}
+      {!isConfigOpen && !hasActiveSketch && hasFeatures && onNewSketchOnPlane && (
+        <div className="absolute top-4 left-4 z-10 animate-in fade-in">
+          <button
+            onClick={onNewSketchOnPlane}
+            className="flex items-center gap-3 px-4 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl shadow-lg transition-all"
+          >
+            <span className="text-xl">📐</span>
+            <div className="flex flex-col text-left">
+              <span className="text-xs font-bold uppercase">New Sketch</span>
+              <span className="text-[9px] opacity-80">On plane (XY, XZ, YZ)</span>
+            </div>
+          </button>
+        </div>
+      )}
       {/* Config Panel (Extrude/Revolve) */}
       {isConfigOpen && (
         <div

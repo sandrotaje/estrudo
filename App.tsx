@@ -143,7 +143,7 @@ const App: React.FC = () => {
     number[] | undefined
   >(undefined);
 
-  const [viewMode, setViewMode] = useState<"2D" | "3D">("2D");
+  const [viewMode, setViewMode] = useState<"2D" | "3D">("3D");
   
   // Store pending parent info for new features (sketch-on-face)
   const pendingParentInfoRef = useRef<{
@@ -1089,6 +1089,16 @@ const App: React.FC = () => {
       arcs: arcs || [],
       circles: circles || [],
     });
+    setViewMode("2D");
+  };
+
+  const handleStartSketchOnPlane = (transform: number[]) => {
+    // Clear any pending parent info since this is a base plane sketch
+    pendingParentInfoRef.current = {};
+    
+    setEditingFeatureId(null);
+    setCurrentTransform(transform);
+    setState(INITIAL_STATE);
     setViewMode("2D");
   };
   
@@ -2121,6 +2131,7 @@ const App: React.FC = () => {
                   onCommitExtrusion={handleCommitFeature}
                   onUpdateFeatureParams={handleUpdateFeatureParams}
                   onSketchOnFace={handleSketchOnFace}
+                  onStartSketchOnPlane={handleStartSketchOnPlane}
                   onReimportFaceEdges={handleReimportFaceEdges}
                   onClose={() => setViewMode("2D")}
                   onEditFeature={handleLoadFeature}
