@@ -262,7 +262,10 @@ export const useHistoryCSG = ({
             }
           } else {
             });
-            console.log(`Created ${drawings.length} drawings`);
+            // Standard EXTRUDE/REVOLVE processing
+            const drawings = createReplicadProfiles(feature.sketch, {
+              axisLineId: activeAxisId,
+            });
             if (drawings.length === 0) {
               console.warn(`No drawings created for feature ${feature.name}, skipping`);
               continue;
