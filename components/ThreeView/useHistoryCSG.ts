@@ -65,6 +65,12 @@ export const useHistoryCSG = ({
       const featureShapesMap = new Map<string, any>();
 
       for (const feature of features) {
+        // Skip SKETCH features - they are standalone sketches without geometry
+        if (feature.featureType === "SKETCH") {
+          console.log(`Skipping SKETCH feature ${feature.name} (no geometry to generate)`);
+          continue;
+        }
+
         // Generate a signature for the feature to detect changes
         const signature = JSON.stringify({
           id: feature.id,
