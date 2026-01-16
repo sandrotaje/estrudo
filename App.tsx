@@ -948,7 +948,7 @@ const App: React.FC = () => {
     depth: number,
     operation: "NEW" | "CUT",
     throughAll: boolean,
-    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH",
+    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH" | "LOFT",
     revolveAngle?: number,
     revolveAxisId?: string
   ) => {
