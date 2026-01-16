@@ -912,6 +912,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onStartReimport={() => setIsReimportMode(true)}
         onCancelReimport={() => setIsReimportMode(false)}
         hasFeatures={features.length > 0}
+        onCommitSketchOnly={handleCommitSketchOnly}
         onNewSketchOnPlane={() => setShowPlaneSelector(true)}
       />
       {!hasActiveSketch && !initialFeatureParams && onStartSketchOnPlane && (showPlaneSelector || features.length === 0) && (
