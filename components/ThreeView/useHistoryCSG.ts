@@ -262,7 +262,6 @@ export const useHistoryCSG = ({
             }
           } else {
             });
-            const drawings = createReplicadProfiles(feature.sketch, {
               axisLineId: activeAxisId,
             });
             if (drawings.length === 0) {
