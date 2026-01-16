@@ -358,7 +358,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-lg">🧊</span>
+                    <span className="text-lg">{feature.featureType === "SKETCH" ? "📝" : "🧊"}</span>
                     <div className="flex flex-col">
                       <div className="flex items-center gap-1">
                         <span className="text-[10px] font-bold text-gray-300">
