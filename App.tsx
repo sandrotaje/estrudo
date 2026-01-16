@@ -948,7 +948,7 @@ const App: React.FC = () => {
     depth: number,
     operation: "NEW" | "CUT",
     throughAll: boolean,
-    featureType: "EXTRUDE" | "REVOLVE",
+    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH",
     revolveAngle?: number,
     revolveAxisId?: string
   ) => {
@@ -961,13 +961,13 @@ const App: React.FC = () => {
         ? existingFeature?.name ||
           (operation === "CUT"
             ? "Cut"
-            : featureType === "REVOLVE"
+            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE"
             ? "Revolve"
             : "Extrude")
         : `${
             operation === "CUT"
               ? "Cut"
-              : featureType === "REVOLVE"
+              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE"
               ? "Revolve"
               : "Extrude"
           } ${features.length + 1}`,

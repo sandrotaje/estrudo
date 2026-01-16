@@ -784,6 +784,20 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     }
   };
 
+
+  const handleCommitSketchOnly = () => {
+    // Commit as a standalone sketch (no extrude/revolve operation)
+    onCommitExtrusion(
+      0, // depth doesn't matter for sketch-only
+      "NEW", // operation doesn't matter for sketch-only
+      false, // throughAll doesn't matter
+      "SKETCH",
+      undefined,
+      undefined
+    );
+    setIsConfigOpen(false);
+    setSelectedSketchElements([]);
+  };
   // Helper to switch back to 2D but keep the session alive by updating params first
   const handleEditSketch = () => {
     if (initialFeatureParams?.id && onUpdateFeatureParams) {
@@ -898,6 +912,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onStartReimport={() => setIsReimportMode(true)}
         onCancelReimport={() => setIsReimportMode(false)}
         hasFeatures={features.length > 0}
+        onCommitSketchOnly={handleCommitSketchOnly}
         onNewSketchOnPlane={() => setShowPlaneSelector(true)}
       />
       {!hasActiveSketch && !initialFeatureParams && onStartSketchOnPlane && (showPlaneSelector || features.length === 0) && (

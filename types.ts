@@ -1,4 +1,3 @@
-
 export interface Point {
   id: string;
   x: number;
@@ -72,7 +71,7 @@ export interface Feature {
   sketch: SketchState;
   
   // Feature Properties
-  featureType: 'EXTRUDE' | 'REVOLVE'; 
+  featureType: 'EXTRUDE' | 'REVOLVE' | 'SKETCH'; // SKETCH is for standalone sketches (for loft/sweep)
   operation: 'NEW' | 'CUT'; // Additive or Subtractive
   transform: number[]; // 16-element Matrix4 array
 

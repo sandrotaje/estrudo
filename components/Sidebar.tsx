@@ -343,7 +343,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             <div className="space-y-1 bg-[#111] rounded-lg p-2 max-h-48 overflow-y-auto">
               {features.length === 0 && (
                 <div className="text-[10px] text-gray-600 italic p-2">
-                  No extruded features yet
+                  No features yet
                 </div>
               )}
               {features.map((feature, i) => {
@@ -358,7 +358,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-lg">🧊</span>
+                    <span className="text-lg">{feature.featureType === "SKETCH" ? "📝" : "🧊"}</span>
                     <div className="flex flex-col">
                       <div className="flex items-center gap-1">
                         <span className="text-[10px] font-bold text-gray-300">
@@ -374,7 +374,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                         )}
                       </div>
                       <span className="text-[8px] text-gray-600">
-                        Depth: {feature.extrusionDepth}mm
+                        {feature.featureType === "SKETCH" ? "Standalone sketch" : `Depth: ${feature.extrusionDepth}mm`}
                       </span>
                     </div>
                   </div>
