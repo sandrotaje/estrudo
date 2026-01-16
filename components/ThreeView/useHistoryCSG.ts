@@ -262,7 +262,6 @@ export const useHistoryCSG = ({
             }
           } else {
             });
-
             console.log(`Created ${drawings.length} drawings`);
             if (drawings.length === 0) {
               console.warn(`No drawings created for feature ${feature.name}, skipping`);
