@@ -979,6 +979,7 @@ const App: React.FC = () => {
       featureType: featureType,
       revolveAngle: revolveAngle,
       revolveAxisId: revolveAxisId,
+      loftSketchIds: loftSketchIds,
       transform: currentTransform || [
         1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
       ],
