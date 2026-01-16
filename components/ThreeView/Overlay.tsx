@@ -33,6 +33,7 @@ type ThreeViewOverlayProps = {
   onStartReimport: () => void;
   onCancelReimport: () => void;
   hasFeatures: boolean;
+  onCommitSketchOnly?: () => void;
   onNewSketchOnPlane?: () => void;
 };
 
