@@ -962,15 +962,11 @@ const App: React.FC = () => {
         ? existingFeature?.name ||
           (operation === "CUT"
             ? "Cut"
-            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft"
-            ? "Revolve"
-            : "Extrude")
+            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude")
         : `${
             operation === "CUT"
               ? "Cut"
-              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft"
-              ? "Revolve"
-              : "Extrude"
+              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude"
           } ${features.length + 1}`,
       sketch: { ...state, extrusionDepth: depth },
       extrusionDepth: depth,
