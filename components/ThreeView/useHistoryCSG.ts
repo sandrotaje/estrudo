@@ -65,9 +65,91 @@ export const useHistoryCSG = ({
       const featureShapesMap = new Map<string, any>();
 
       for (const feature of features) {
-        // Skip SKETCH features - they are standalone sketches without geometry
+        // Render SKETCH features as 3D line visualization (no solid geometry)
         if (feature.featureType === "SKETCH") {
-          console.log(`Skipping SKETCH feature ${feature.name} (no geometry to generate)`);
+          console.log(`Rendering SKETCH feature ${feature.name} as line visualization`);
+          
+          // Create a group for this sketch feature
+          const sketchGroup = new THREE.Group();
+          sketchGroup.userData.featureId = feature.id;
+          sketchGroup.userData.featureType = "SKETCH";
+          
+          // Apply the feature transform
+          if (feature.transform) {
+            sketchGroup.matrix.fromArray(feature.transform);
+            sketchGroup.matrixAutoUpdate = false;
+            sketchGroup.updateMatrixWorld(true);
+          }
+          
+          const lineMaterial = new THREE.LineBasicMaterial({ color: 0x22c55e, linewidth: 2 });
+          const constructionMaterial = new THREE.LineDashedMaterial({ 
+            color: 0x666666, 
+            dashSize: 4, 
+            gapSize: 2 
+          });
+          
+          // Render lines
+          feature.sketch.lines.forEach((line) => {
+            const p1 = feature.sketch.points.find((p) => p.id === line.p1);
+            const p2 = feature.sketch.points.find((p) => p.id === line.p2);
+            if (p1 && p2) {
+              const geom = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(p1.x, p1.y, 0),
+                new THREE.Vector3(p2.x, p2.y, 0),
+              ]);
+              const mat = line.construction ? constructionMaterial.clone() : lineMaterial.clone();
+              const mesh = new THREE.Line(geom, mat);
+              if (line.construction) mesh.computeLineDistances();
+              sketchGroup.add(mesh);
+            }
+          });
+          
+          // Render circles
+          feature.sketch.circles.forEach((circle) => {
+            const center = feature.sketch.points.find((p) => p.id === circle.center);
+            if (center) {
+              const curve = new THREE.EllipseCurve(center.x, center.y, circle.radius, circle.radius, 0, 2 * Math.PI, false, 0);
+              const points = curve.getPoints(50);
+              const geom = new THREE.BufferGeometry().setFromPoints(points);
+              const mat = circle.construction ? constructionMaterial.clone() : lineMaterial.clone();
+              const mesh = new THREE.Line(geom, mat);
+              sketchGroup.add(mesh);
+            }
+          });
+          
+          // Render arcs
+          (feature.sketch.arcs || []).forEach((arc) => {
+            const center = feature.sketch.points.find((p) => p.id === arc.center);
+            const p1 = feature.sketch.points.find((p) => p.id === arc.p1);
+            const p2 = feature.sketch.points.find((p) => p.id === arc.p2);
+            if (center && p1 && p2) {
+              const startAngle = Math.atan2(p1.y - center.y, p1.x - center.x);
+              const endAngle = Math.atan2(p2.y - center.y, p2.x - center.x);
+              let diff = endAngle - startAngle;
+              while (diff <= -Math.PI) diff += 2 * Math.PI;
+              while (diff > Math.PI) diff -= 2 * Math.PI;
+              const clockwise = diff < 0;
+              const curve = new THREE.EllipseCurve(center.x, center.y, arc.radius, arc.radius, startAngle, endAngle, clockwise, 0);
+              const points = curve.getPoints(50);
+              const geom = new THREE.BufferGeometry().setFromPoints(points);
+              const mat = arc.construction ? constructionMaterial.clone() : lineMaterial.clone();
+              const mesh = new THREE.Line(geom, mat);
+              sketchGroup.add(mesh);
+            }
+          });
+          
+          // Render points as small spheres
+          const pointGeom = new THREE.SphereGeometry(1.5, 8, 8);
+          const pointMaterial = new THREE.MeshBasicMaterial({ color: 0x22c55e });
+          feature.sketch.points.forEach((point) => {
+            // Skip projected points (construction reference)
+            if (point.id.startsWith('p_proj_')) return;
+            const sphere = new THREE.Mesh(pointGeom, pointMaterial);
+            sphere.position.set(point.x, point.y, 0);
+            sketchGroup.add(sphere);
+          });
+          
+          group.add(sketchGroup);
           continue;
         }
 
