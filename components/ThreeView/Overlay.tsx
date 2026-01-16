@@ -178,6 +178,20 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
                 </span>
               </div>
             </button>
+            {onCommitSketchOnly && (
+              <button
+                onClick={onCommitSketchOnly}
+                className="flex items-center gap-3 px-4 py-3 bg-green-600 hover:bg-green-500 text-white rounded-xl shadow-lg transition-all text-left"
+              >
+                <span className="text-xl">📝</span>
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold uppercase">Sketch Only</span>
+                  <span className="text-[9px] opacity-80">
+                    Save for loft/sweep
+                  </span>
+                </div>
+              </button>
+            )}
           </div>
         </div>
       )}
