@@ -262,7 +262,6 @@ export const useHistoryCSG = ({
             }
           } else {
             });
-            // Standard EXTRUDE/REVOLVE processing
             const drawings = createReplicadProfiles(feature.sketch, {
               axisLineId: activeAxisId,
             });
