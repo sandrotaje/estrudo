@@ -948,9 +948,10 @@ const App: React.FC = () => {
     depth: number,
     operation: "NEW" | "CUT",
     throughAll: boolean,
-    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH",
+    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH" | "LOFT",
     revolveAngle?: number,
-    revolveAxisId?: string
+    revolveAxisId?: string,
+    loftSketchIds?: string[]
   ) => {
     const now = Date.now();
     const existingFeature = editingFeatureId ? features.find((f) => f.id === editingFeatureId) : null;
@@ -961,15 +962,11 @@ const App: React.FC = () => {
         ? existingFeature?.name ||
           (operation === "CUT"
             ? "Cut"
-            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE"
-            ? "Revolve"
-            : "Extrude")
+            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude")
         : `${
             operation === "CUT"
               ? "Cut"
-              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE"
-              ? "Revolve"
-              : "Extrude"
+              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude"
           } ${features.length + 1}`,
       sketch: { ...state, extrusionDepth: depth },
       extrusionDepth: depth,
@@ -978,6 +975,7 @@ const App: React.FC = () => {
       featureType: featureType,
       revolveAngle: revolveAngle,
       revolveAxisId: revolveAxisId,
+      loftSketchIds: loftSketchIds,
       transform: currentTransform || [
         1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
       ],

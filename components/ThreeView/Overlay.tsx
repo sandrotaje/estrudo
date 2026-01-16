@@ -5,7 +5,7 @@ type ThreeViewOverlayProps = {
   hasActiveSketch: boolean;
   isConfigOpen: boolean;
   selectedSketchElements: string[];
-  featureType: "EXTRUDE" | "REVOLVE";
+  featureType: "EXTRUDE" | "REVOLVE" | "LOFT";
   operation: "NEW" | "CUT";
   throughAll: boolean;
   localDepth: number;
@@ -18,9 +18,14 @@ type ThreeViewOverlayProps = {
   selectedFaceData: unknown | null;
   showProjectionWarning: boolean;
   isReimportMode: boolean;
+  // Loft props
+  availableSketches: Feature[];
+  selectedLoftSketchIds: string[];
+  onToggleLoftSketch: (sketchId: string) => void;
+  // Callbacks
   onFitView: () => void;
   onExportSTL: () => void;
-  onSetFeatureType: (value: "EXTRUDE" | "REVOLVE") => void;
+  onSetFeatureType: (value: "EXTRUDE" | "REVOLVE" | "LOFT") => void;
   onSetIsConfigOpen: (value: boolean) => void;
   onSetOperation: (value: "NEW" | "CUT") => void;
   onSetThroughAll: (value: boolean) => void;
@@ -54,6 +59,9 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   selectedFaceData,
   showProjectionWarning,
   isReimportMode,
+  availableSketches,
+  selectedLoftSketchIds,
+  onToggleLoftSketch,
   onFitView,
   onExportSTL,
   onSetFeatureType,
@@ -72,6 +80,8 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onCommitSketchOnly,
   onNewSketchOnPlane,
 }) => {
+  const canLoft = availableSketches.length >= 2;
+  
   return (
     <>
       <div className="absolute top-4 right-4 z-10 flex gap-2">
@@ -197,9 +207,9 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
       )}
 
 
-      {/* New Sketch Button (When features exist but no active sketch) */}
+      {/* New Sketch / Loft Buttons (When features exist but no active sketch) */}
       {!isConfigOpen && !hasActiveSketch && hasFeatures && onNewSketchOnPlane && (
-        <div className="absolute top-4 left-4 z-10 animate-in fade-in">
+        <div className="absolute top-4 left-4 z-10 animate-in fade-in flex flex-col gap-2">
           <button
             onClick={onNewSketchOnPlane}
             className="flex items-center gap-3 px-4 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl shadow-lg transition-all"
@@ -210,9 +220,24 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
               <span className="text-[9px] opacity-80">On plane (XY, XZ, YZ)</span>
             </div>
           </button>
+          {canLoft && (
+            <button
+              onClick={() => {
+                onSetFeatureType("LOFT");
+                onSetIsConfigOpen(true);
+              }}
+              className="flex items-center gap-3 px-4 py-3 bg-teal-600 hover:bg-teal-500 text-white rounded-xl shadow-lg transition-all"
+            >
+              <span className="text-xl">🔗</span>
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-bold uppercase">Loft</span>
+                <span className="text-[9px] opacity-80">Between {availableSketches.length} sketches</span>
+              </div>
+            </button>
+          )}
         </div>
       )}
-      {/* Config Panel (Extrude/Revolve) */}
+      {/* Config Panel (Extrude/Revolve/Loft) */}
       {isConfigOpen && (
         <div
           className={`absolute top-4 left-4 z-10 bg-[#1a1a1a]/95 backdrop-blur-xl p-5 rounded-2xl border border-white/10 shadow-2xl w-72 flex flex-col gap-4 animate-in slide-in-from-left-4 transition-opacity ${
@@ -254,31 +279,45 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             >
               Revolve
             </button>
+            {canLoft && (
+              <button
+                onClick={() => onSetFeatureType("LOFT")}
+                className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                  featureType === "LOFT"
+                    ? "bg-teal-600 text-white"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                Loft
+              </button>
+            )}
           </div>
 
-          {/* Operation Toggle */}
-          <div className="flex bg-[#000] p-1 rounded-lg">
-            <button
-              onClick={() => onSetOperation("NEW")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                operation === "NEW"
-                  ? "bg-blue-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              New
-            </button>
-            <button
-              onClick={() => onSetOperation("CUT")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                operation === "CUT"
-                  ? "bg-red-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Cut
-            </button>
-          </div>
+          {/* Operation Toggle (not for Loft) */}
+          {featureType !== "LOFT" && (
+            <div className="flex bg-[#000] p-1 rounded-lg">
+              <button
+                onClick={() => onSetOperation("NEW")}
+                className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                  operation === "NEW"
+                    ? "bg-blue-600 text-white"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                New
+              </button>
+              <button
+                onClick={() => onSetOperation("CUT")}
+                className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                  operation === "CUT"
+                    ? "bg-red-600 text-white"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                Cut
+              </button>
+            </div>
+          )}
 
           {featureType === "EXTRUDE" && (
             <>
@@ -391,7 +430,49 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             </>
           )}
 
-          {initialFeatureParams && (
+          {featureType === "LOFT" && (
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                Select Sketches to Loft (in order)
+              </label>
+              <div className="max-h-48 overflow-y-auto space-y-1">
+                {availableSketches.map((sketch, i) => {
+                  const isSelected = selectedLoftSketchIds.includes(sketch.id);
+                  const selectionIndex = selectedLoftSketchIds.indexOf(sketch.id);
+                  return (
+                    <button
+                      key={sketch.id}
+                      onClick={() => onToggleLoftSketch(sketch.id)}
+                      className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-all ${
+                        isSelected
+                          ? "bg-teal-600/20 border border-teal-500/50 text-teal-300"
+                          : "bg-[#0a0a0a] border border-white/10 text-gray-400 hover:text-gray-200 hover:border-white/20"
+                      }`}
+                    >
+                      <span className={`w-5 h-5 flex items-center justify-center rounded-full text-[10px] font-bold ${
+                        isSelected ? "bg-teal-600 text-white" : "bg-gray-700 text-gray-500"
+                      }`}>
+                        {isSelected ? selectionIndex + 1 : i + 1}
+                      </span>
+                      <span className="text-xs font-medium">{sketch.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {selectedLoftSketchIds.length < 2 && (
+                <p className="text-[10px] text-amber-400">
+                  Select at least 2 sketches to create a loft
+                </p>
+              )}
+              {selectedLoftSketchIds.length >= 2 && (
+                <p className="text-[10px] text-teal-400">
+                  Will loft between {selectedLoftSketchIds.length} sketches
+                </p>
+              )}
+            </div>
+          )}
+
+          {initialFeatureParams && featureType !== "LOFT" && (
             <div className="pt-2 border-t border-white/5">
               <button
                 onClick={onEditSketch}
@@ -423,9 +504,11 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             </button>
             <button
               onClick={onCommit}
-              disabled={!!errorMsg || isGeneratingPreview}
+              disabled={!!errorMsg || isGeneratingPreview || (featureType === "LOFT" && selectedLoftSketchIds.length < 2)}
               className={`flex-1 py-2 rounded-lg text-xs font-bold text-white uppercase shadow-lg ${
-                errorMsg || isGeneratingPreview ? "bg-gray-700" : "bg-blue-600 hover:bg-blue-500"
+                errorMsg || isGeneratingPreview || (featureType === "LOFT" && selectedLoftSketchIds.length < 2)
+                  ? "bg-gray-700"
+                  : featureType === "LOFT" ? "bg-teal-600 hover:bg-teal-500" : "bg-blue-600 hover:bg-blue-500"
               }`}
             >
               OK
