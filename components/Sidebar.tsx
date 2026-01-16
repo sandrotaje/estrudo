@@ -343,7 +343,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             <div className="space-y-1 bg-[#111] rounded-lg p-2 max-h-48 overflow-y-auto">
               {features.length === 0 && (
                 <div className="text-[10px] text-gray-600 italic p-2">
-                  No extruded features yet
+                  No features yet
                 </div>
               )}
               {features.map((feature, i) => {
