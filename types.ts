@@ -71,7 +71,7 @@ export interface Feature {
   sketch: SketchState;
   
   // Feature Properties
-  featureType: 'EXTRUDE' | 'REVOLVE' | 'SKETCH'; // SKETCH is for standalone sketches (for loft/sweep)
+  featureType: 'EXTRUDE' | 'REVOLVE' | 'SKETCH' | 'LOFT'; // SKETCH is for standalone sketches (for loft/sweep)
   operation: 'NEW' | 'CUT'; // Additive or Subtractive
   transform: number[]; // 16-element Matrix4 array
 
@@ -82,6 +82,9 @@ export interface Feature {
   // Revolve Params
   revolveAngle?: number; // In degrees (360 default)
   revolveAxisId?: string; // ID of the line used as axis
+  
+  // Loft Params
+  loftSketchIds?: string[]; // IDs of sketch features to loft between (ordered)
   
   // Parametric dependencies (for sketches on faces)
   parentFeatureId?: string; // ID of feature this was sketched on
