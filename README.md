@@ -1,5 +1,7 @@
 # Estrudo
 
+**[Live Demo](https://sandrotaje.github.io/estrudo/)**
+
 A web-based parametric CAD sketcher with real-time 3D visualization. Create precise 2D sketches with geometric constraints and transform them into 3D models using extrusion and revolve operations.
 
 ## Features
@@ -91,9 +93,8 @@ The production-ready files will be generated in the `dist` directory.
 - **React 19**: Modern UI framework
 - **TypeScript**: Type-safe development
 - **Three.js**: 3D rendering and visualization
-- **three-bvh-csg**: Constructive Solid Geometry operations
+- **Replicad**: Geometry engine built on OpenCascade (the same kernel powering FreeCAD), compiled to WASM for browser-based B-Rep modeling and boolean operations
 - **Vite**: Fast build tool and development server
-- **WASM**: High-performance constraint solving
 
 ## Project Structure
 
@@ -112,11 +113,6 @@ estrudo/
 ├── App.tsx                     # Main application component
 └── vite.config.ts             # Build configuration
 ```
-
-## Live Demo
-
-The application is automatically deployed to GitHub Pages on every push to main:
-https://sandrotaje.github.io/estrudo/
 
 ## Development
 
