@@ -267,7 +267,7 @@ export const useHistoryCSG = ({
               
               // Create lofted solid
               console.log(`Lofting between ${wires.length} wires`);
-              currentFeatureShape = loft(wires, { ruled: false });
+              currentFeatureShape = loft(wires, { ruled: true });
               console.log(`Loft succeeded`);
               
             } catch (e) {
