@@ -211,37 +211,80 @@ export const useHistoryCSG = ({
             try {
               // Create wires from each sketch
               const wires: any[] = [];
-              
+
               for (const sketchFeature of sketchFeatures) {
                 // Create drawing from sketch
                 const drawings = createReplicadProfiles(sketchFeature.sketch, {});
-                
+
                 if (drawings.length === 0) {
                   console.warn(`No drawings created for sketch ${sketchFeature.name}, skipping`);
                   continue;
                 }
-                
+
                 // Use the first drawing (main profile)
                 const drawing = drawings[0];
-                
-                // Get the Z position from the sketch's transform (element 14 is Z translation)
-                const zPosition = sketchFeature.transform[14] || 0;
-                
-                console.log(`  Sketch ${sketchFeature.name}: Z position = ${zPosition}`);
-                console.log(`  Transform: [${sketchFeature.transform.slice(12, 16).map(v => v.toFixed(2)).join(', ')}]`);
-                
-                // Create sketch on XY plane at the correct Z position
-                // sketchOnPlane("XY", zOffset) places the sketch at Z = zOffset
-                const sketchOnPlane = drawing.sketchOnPlane("XY", zPosition);
-                const wire = sketchOnPlane.wire;
-                
+
+                // Create sketch on XY plane at Z=0, then transform to final position
+                const sketchOnPlane = drawing.sketchOnPlane("XY", 0);
+                let wire = sketchOnPlane.wire;
+
                 if (!wire) {
                   console.error(`  Failed to get wire from sketch ${sketchFeature.name}`);
                   continue;
                 }
-                
+
+                // Apply the full transformation from the sketch's transform matrix
+                const transform = sketchFeature.transform;
+                const matrix = new THREE.Matrix4();
+                matrix.fromArray(transform);
+
+                // Extract position
+                const position = new THREE.Vector3(transform[12], transform[13], transform[14]);
+
+                // Check if this is not the default identity matrix
+                const isIdentity = transform.every((v: number, i: number) =>
+                  (i % 5 === 0 && Math.abs(v - 1) < 1e-10) || (i % 5 !== 0 && Math.abs(v) < 1e-10)
+                );
+
+                console.log(`  Sketch ${sketchFeature.name}: position = [${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}]`);
+                console.log(`  Is identity: ${isIdentity}`);
+
+                if (!isIdentity) {
+                  // Decompose for rotation
+                  const quaternion = new THREE.Quaternion();
+                  const scale = new THREE.Vector3();
+                  matrix.decompose(new THREE.Vector3(), quaternion, scale);
+
+                  // Convert quaternion to axis-angle for Replicad
+                  const angle = 2 * Math.acos(Math.min(1, Math.max(-1, quaternion.w)));
+                  const s = Math.sqrt(Math.max(0, 1 - quaternion.w * quaternion.w));
+                  let axis: [number, number, number] = [0, 0, 1];
+                  if (s > 0.001) {
+                    axis = [quaternion.x / s, quaternion.y / s, quaternion.z / s];
+                  }
+
+                  const angleDeg = angle * 180 / Math.PI;
+                  console.log(`  Rotation: ${angleDeg.toFixed(2)} degrees around axis [${axis.map(v => v.toFixed(3)).join(', ')}]`);
+
+                  // Apply rotation first (around origin), then translation
+                  if (angleDeg > 0.1) {
+                    wire = wire.rotate(angleDeg, [0, 0, 0], axis);
+                    console.log(`  Applied rotation to wire`);
+                  }
+
+                  // Then translate
+                  if (position.length() > 0.001) {
+                    wire = wire.translate(position.x, position.y, position.z);
+                    console.log(`  Applied translation to wire: [${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}]`);
+                  }
+                } else if (position.length() > 0.001) {
+                  // Identity rotation but still needs translation
+                  wire = wire.translate(position.x, position.y, position.z);
+                  console.log(`  Applied translation to wire: [${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}]`);
+                }
+
                 wires.push(wire);
-                console.log(`  Added wire from sketch ${sketchFeature.name} at Z=${zPosition}`);
+                console.log(`  Added wire from sketch ${sketchFeature.name}`);
               }
               
               if (wires.length < 2) {
