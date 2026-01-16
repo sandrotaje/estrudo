@@ -374,7 +374,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                         )}
                       </div>
                       <span className="text-[8px] text-gray-600">
-                        Depth: {feature.extrusionDepth}mm
+                        {feature.featureType === "SKETCH" ? "Standalone sketch" : `Depth: ${feature.extrusionDepth}mm`}
                       </span>
                     </div>
                   </div>
