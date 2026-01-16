@@ -224,40 +224,24 @@ export const useHistoryCSG = ({
                 // Use the first drawing (main profile)
                 const drawing = drawings[0];
                 
-                // Get the sketch's transformation matrix
-                const sketchMatrix = new THREE.Matrix4();
-                sketchMatrix.fromArray(sketchFeature.transform);
+                // Get the Z position from the sketch's transform (element 14 is Z translation)
+                const zPosition = sketchFeature.transform[14] || 0;
                 
-                // Decompose the matrix
-                const position = new THREE.Vector3();
-                const quaternion = new THREE.Quaternion();
-                const scale = new THREE.Vector3();
-                sketchMatrix.decompose(position, quaternion, scale);
+                console.log(`  Sketch ${sketchFeature.name}: Z position = ${zPosition}`);
+                console.log(`  Transform: [${sketchFeature.transform.slice(12, 16).map(v => v.toFixed(2)).join(', ')}]`);
                 
-                // Create wire from drawing
-                const sketchForWire = drawing.sketchOnPlane();
-                let wire = sketchForWire.wire;
+                // Create sketch on XY plane at the correct Z position
+                // sketchOnPlane("XY", zOffset) places the sketch at Z = zOffset
+                const sketchOnPlane = drawing.sketchOnPlane("XY", zPosition);
+                const wire = sketchOnPlane.wire;
                 
-                // Convert quaternion to axis-angle for Replicad
-                const angle = 2 * Math.acos(Math.min(1, Math.max(-1, quaternion.w)));
-                const s = Math.sqrt(Math.max(0, 1 - quaternion.w * quaternion.w));
-                let axis: [number, number, number] = [0, 0, 1];
-                if (s > 0.001) {
-                  axis = [quaternion.x / s, quaternion.y / s, quaternion.z / s];
-                }
-                
-                const angleDeg = angle * 180 / Math.PI;
-                
-                // Apply transformation to position the wire in 3D space
-                if (angleDeg > 0.1) {
-                  wire = wire.rotate(angleDeg, [0, 0, 0], axis);
-                }
-                if (position.length() > 0.001) {
-                  wire = wire.translate(position.x, position.y, position.z);
+                if (!wire) {
+                  console.error(`  Failed to get wire from sketch ${sketchFeature.name}`);
+                  continue;
                 }
                 
                 wires.push(wire);
-                console.log(`  Added wire from sketch ${sketchFeature.name} at position [${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}]`);
+                console.log(`  Added wire from sketch ${sketchFeature.name} at Z=${zPosition}`);
               }
               
               if (wires.length < 2) {
@@ -265,19 +249,18 @@ export const useHistoryCSG = ({
                 continue;
               }
               
-              // Create lofted solid
+              // Check that wires are at different positions
               console.log(`Lofting between ${wires.length} wires`);
+              
+              // Create lofted solid with ruled surface
               currentFeatureShape = loft(wires, { ruled: true });
-              console.log(`Loft succeeded`);
+              console.log(`Loft succeeded!`);
               
             } catch (e) {
               console.error(`Failed to create loft for feature ${feature.name}:`, e);
               continue;
             }
           } else {
-            // Standard EXTRUDE/REVOLVE processing
-            const drawings = createReplicadProfiles(feature.sketch, {
-              axisLineId: activeAxisId,
             });
 
             console.log(`Created ${drawings.length} drawings`);
