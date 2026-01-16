@@ -307,24 +307,29 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
+      {/* Mobile overlay backdrop */}
       <div
-        className={`fixed inset-0 bg-black/60 z-[90] transition-opacity ${
+        className={`fixed inset-0 bg-black/60 z-[90] transition-opacity lg:hidden ${
           isOpen ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
         onClick={onClose}
       />
+      {/* Sidebar: fixed on desktop, overlay on mobile */}
       <div
-        className={`fixed inset-y-0 left-0 w-80 bg-[#1a1a1a] z-[100] transform transition-transform duration-300 shadow-2xl flex flex-col ${
-          isOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
+        className={`
+          w-80 bg-[#1a1a1a] flex flex-col shrink-0 border-r border-white/5
+          fixed inset-y-0 left-0 z-[100] transform transition-transform duration-300 shadow-2xl
+          lg:relative lg:translate-x-0 lg:shadow-none lg:z-auto
+          ${isOpen ? "translate-x-0" : "-translate-x-full"}
+        `}
       >
-        <div className="p-4 border-b border-white/5 flex items-center justify-between shrink-0">
+        <div className="h-16 px-4 border-b border-white/10 flex items-center justify-between shrink-0">
           <span className="font-bold text-sm tracking-tighter uppercase text-blue-400">
             Sketcher Properties
           </span>
           <button
             onClick={onClose}
-            className="p-2 text-gray-500 hover:text-white text-xl"
+            className="p-2 text-gray-500 hover:text-white text-xl lg:hidden"
           >
             ✕
           </button>

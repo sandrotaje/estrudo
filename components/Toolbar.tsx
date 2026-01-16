@@ -26,13 +26,13 @@ const Toolbar: React.FC<ToolbarProps> = ({
     <div className="relative h-16 bg-[#1a1a1a] border-b border-white/10 flex items-center px-4 gap-3 z-[60] shrink-0 shadow-lg">
       <button 
         onClick={onToggleSidebar} 
-        className="w-11 h-11 flex items-center justify-center bg-[#2a2a2a] hover:bg-[#333] border border-white/5 rounded-xl text-xl text-blue-400 shrink-0 transition-colors active:scale-95"
+        className="w-11 h-11 flex items-center justify-center bg-[#2a2a2a] hover:bg-[#333] border border-white/5 rounded-xl text-xl text-blue-400 shrink-0 transition-colors active:scale-95 lg:hidden"
         title="Open Properties Sidebar"
       >
         ☰
       </button>
       
-      <div className="h-8 w-px bg-white/10 shrink-0" />
+      <div className="h-8 w-px bg-white/10 shrink-0 lg:hidden" />
       
       {viewMode === '2D' ? (
         <div className="flex bg-[#0f0f0f] p-1 rounded-xl border border-white/5 gap-1 shrink-0">

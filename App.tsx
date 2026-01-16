@@ -1037,7 +1037,7 @@ const App: React.FC = () => {
       setState(JSON.parse(JSON.stringify(feature.sketch)));
       setCurrentTransform(feature.transform);
       setViewMode("3D"); // Switch to 3D to edit params
-      setIsSidebarOpen(false); // Close sidebar when editing sketch
+      setIsSidebarOpen(false); // Close mobile sidebar when editing sketch
     }
   };
 
