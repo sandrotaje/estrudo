@@ -7,13 +7,14 @@ import React, {
 } from "react";
 import * as THREE from "three";
 import { STLExporter } from "three/addons/exporters/STLExporter.js";
-import { SketchState, Feature, Line, Arc, Circle, Point } from "../types";
+import { SketchState, Feature, Line, Arc, Circle, Point, EdgeFilterType } from "../types";
 import {
   generateGeometryForFeature,
   generateGeometryForFeatureReplicad,
   getShapesFromSketch,
 } from "./ThreeView/sketchGeometry";
 import { replicadToThree } from "./ThreeView/replicadThreeUtils";
+import { EdgeFinder } from "replicad";
 import {
   pickFaceData,
   pickSketchElementId,
@@ -83,8 +84,9 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const mountRef = useRef<HTMLDivElement>(null);
 
   // Configuration State - Initialize with initialFeatureParams if available
-  const [featureType, setFeatureType] = useState<"EXTRUDE" | "REVOLVE" | "LOFT">(
-    initialFeatureParams?.featureType === "LOFT" ? "LOFT" : 
+  const [featureType, setFeatureType] = useState<"EXTRUDE" | "REVOLVE" | "LOFT" | "FILLET">(
+    initialFeatureParams?.featureType === "LOFT" ? "LOFT" :
+    initialFeatureParams?.featureType === "FILLET" ? "FILLET" :
     initialFeatureParams?.featureType || "EXTRUDE"
   );
   const [localDepth, setLocalDepth] = useState(
@@ -107,6 +109,17 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // Loft State
   const [selectedLoftSketchIds, setSelectedLoftSketchIds] = useState<string[]>(
     initialFeatureParams?.loftSketchIds || []
+  );
+
+  // Fillet State
+  const [filletRadius, setFilletRadius] = useState(
+    initialFeatureParams?.filletRadius || 5
+  );
+  const [filletType, setFilletType] = useState<"fillet" | "chamfer">(
+    initialFeatureParams?.filletType || "fillet"
+  );
+  const [edgeFilter, setEdgeFilter] = useState<EdgeFilterType>(
+    initialFeatureParams?.edgeFilter || "ALL"
   );
 
   // Axis Selection State
@@ -256,13 +269,20 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // Sync state when entering Edit Mode for an existing feature
   useEffect(() => {
     if (initialFeatureParams) {
-      setFeatureType(initialFeatureParams.featureType === "LOFT" ? "LOFT" : initialFeatureParams.featureType);
+      setFeatureType(
+        initialFeatureParams.featureType === "LOFT" ? "LOFT" :
+        initialFeatureParams.featureType === "FILLET" ? "FILLET" :
+        initialFeatureParams.featureType
+      );
       setLocalDepth(initialFeatureParams.extrusionDepth);
       setRevolveAngle(initialFeatureParams.revolveAngle || 360);
       setOperation(initialFeatureParams.operation);
       setThroughAll(initialFeatureParams.throughAll);
       setActiveAxisId(initialFeatureParams.revolveAxisId || null);
       setSelectedLoftSketchIds(initialFeatureParams.loftSketchIds || []);
+      setFilletRadius(initialFeatureParams.filletRadius || 5);
+      setFilletType(initialFeatureParams.filletType || "fillet");
+      setEdgeFilter(initialFeatureParams.edgeFilter || "ALL");
       setIsConfigOpen(true);
     }
   }, [initialFeatureParams]);
@@ -352,7 +372,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     let timeoutId: NodeJS.Timeout;
 
     const generatePreview = async () => {
-      // Skip preview for LOFT type (we don't have inline preview for loft yet)
+      // Skip preview for LOFT type only (FILLET now has preview)
       if (featureType === "LOFT") {
         setPreviewGeometry(null);
         setErrorMsg(null);
@@ -367,6 +387,75 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         return;
       }
 
+      // Handle FILLET preview separately
+      if (featureType === "FILLET") {
+        if (!lastResultShapeRef.current) {
+          setPreviewGeometry(null);
+          setErrorMsg("No geometry to apply fillet/chamfer to.");
+          setIsGeneratingPreview(false);
+          return;
+        }
+
+        setIsGeneratingPreview(true);
+
+        try {
+          // Create edge filter function based on edgeFilter setting
+          const edgeFilterFn = (ef: typeof EdgeFinder.prototype): typeof EdgeFinder.prototype => {
+            switch (edgeFilter) {
+              case 'PARALLEL_XY':
+                return ef.parallelTo("XY");
+              case 'PARALLEL_XZ':
+                return ef.parallelTo("XZ");
+              case 'PARALLEL_YZ':
+                return ef.parallelTo("YZ");
+              case 'VERTICAL':
+                return ef.inDirection([0, 0, 1]);
+              case 'HORIZONTAL':
+                return ef.atAngleWith([0, 0, 1], 90);
+              case 'ALL':
+              default:
+                return ef;
+            }
+          };
+
+          let modifiedShape: any;
+          const currentShape = lastResultShapeRef.current;
+
+          if (filletType === 'fillet') {
+            if (edgeFilter === 'ALL') {
+              modifiedShape = currentShape.fillet(filletRadius);
+            } else {
+              modifiedShape = currentShape.fillet(filletRadius, edgeFilterFn);
+            }
+          } else {
+            // chamfer - apply single chamfer with full radius
+            // Note: Multi-segment faceted chamfers require manual geometry construction
+            // which Replicad doesn't support. The segments parameter is stored for future use.
+            if (edgeFilter === 'ALL') {
+              modifiedShape = currentShape.chamfer(filletRadius);
+            } else {
+              modifiedShape = currentShape.chamfer(filletRadius, edgeFilterFn);
+            }
+          }
+
+          if (!active) return;
+
+          // Generate preview geometry with lower quality for faster rendering
+          const geometry = replicadToThree(modifiedShape, 2.0, 0.8);
+          setPreviewGeometry(geometry);
+          setErrorMsg(null);
+          setIsGeneratingPreview(false);
+        } catch (e) {
+          if (!active) return;
+          console.error("Fillet preview failed:", e);
+          setPreviewGeometry(null);
+          setErrorMsg(`${filletType === 'fillet' ? 'Fillet' : 'Chamfer'} failed. Try a smaller radius.`);
+          setIsGeneratingPreview(false);
+        }
+        return;
+      }
+
+      // Standard EXTRUDE/REVOLVE preview
       if (state.lines.length === 0 && state.circles.length === 0) {
         setPreviewGeometry(null);
         setErrorMsg(null);
@@ -442,6 +531,9 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     activeAxisId,
     isConfigOpen,
     selectedSketchElements,
+    filletRadius,
+    filletType,
+    edgeFilter,
   ]);
 
   useEffect(() => {
@@ -460,9 +552,21 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   usePreviewMesh({
     meshGroupRef,
     previewGeometry,
-    currentTransform,
-    operation,
+    // For FILLET, don't apply transform as the shape is already in world coordinates
+    currentTransform: featureType === "FILLET" ? undefined : currentTransform,
+    operation: featureType === "FILLET" ? "NEW" : operation,
+    // Pink color for fillet preview
+    previewColor: featureType === "FILLET" ? 0xec4899 : undefined,
   });
+
+  // Hide history group when showing fillet preview (since fillet preview replaces the entire shape)
+  useEffect(() => {
+    if (!historyGroupRef.current) return;
+
+    // Hide history when showing fillet preview, show it otherwise
+    const shouldHideHistory = featureType === "FILLET" && isConfigOpen && previewGeometry !== null;
+    historyGroupRef.current.visible = !shouldHideHistory;
+  }, [featureType, isConfigOpen, previewGeometry]);
 
   useFaceHighlight({
     highlightGroupRef,
@@ -817,6 +921,25 @@ const ThreeView: React.FC<ThreeViewProps> = ({
       );
       setIsConfigOpen(false);
       setSelectedLoftSketchIds([]);
+    } else if (featureType === "FILLET") {
+      // For fillet, we need existing features to apply to
+      if (features.length === 0) {
+        setErrorMsg("No geometry to apply fillet/chamfer to");
+        return;
+      }
+      onCommitExtrusion(
+        0, // depth doesn't matter for fillet
+        "NEW", // operation doesn't matter for fillet
+        false, // throughAll doesn't matter
+        "FILLET",
+        undefined, // revolveAngle doesn't matter
+        undefined, // revolveAxisId doesn't matter
+        undefined, // loftSketchIds doesn't matter
+        filletRadius,
+        filletType,
+        edgeFilter
+      );
+      setIsConfigOpen(false);
     } else if (!errorMsg) {
       onCommitExtrusion(
         localDepth,
@@ -948,6 +1071,12 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         availableSketches={availableSketches}
         selectedLoftSketchIds={selectedLoftSketchIds}
         onToggleLoftSketch={handleToggleLoftSketch}
+        filletRadius={filletRadius}
+        filletType={filletType}
+        edgeFilter={edgeFilter}
+        onSetFilletRadius={setFilletRadius}
+        onSetFilletType={setFilletType}
+        onSetEdgeFilter={setEdgeFilter}
         onFitView={fitView}
         onExportSTL={handleExportSTL}
         onSetFeatureType={setFeatureType}

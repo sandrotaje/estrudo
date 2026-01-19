@@ -7,6 +7,7 @@ type UsePreviewMeshParams = {
   previewGeometry: THREE.BufferGeometry | null;
   currentTransform?: number[];
   operation: "NEW" | "CUT";
+  previewColor?: number; // Optional custom color for preview
 };
 
 export const usePreviewMesh = ({
@@ -14,6 +15,7 @@ export const usePreviewMesh = ({
   previewGeometry,
   currentTransform,
   operation,
+  previewColor,
 }: UsePreviewMeshParams) => {
   useEffect(() => {
     if (!meshGroupRef.current) return;
@@ -31,7 +33,8 @@ export const usePreviewMesh = ({
     clearThreeGroup(group);
 
     if (previewGeometry) {
-      const color = operation === "CUT" ? 0xff6b6b : 0x60a5fa;
+      // Use custom color if provided, otherwise default based on operation
+      const color = previewColor ?? (operation === "CUT" ? 0xff6b6b : 0x60a5fa);
       const mat = new THREE.MeshStandardMaterial({
         color: color,
         roughness: 0.2,
@@ -45,5 +48,5 @@ export const usePreviewMesh = ({
       mesh.receiveShadow = true;
       group.add(mesh);
     }
-  }, [currentTransform, meshGroupRef, operation, previewGeometry]);
+  }, [currentTransform, meshGroupRef, operation, previewGeometry, previewColor]);
 };

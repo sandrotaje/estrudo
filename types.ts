@@ -65,26 +65,40 @@ export interface SketchState {
   extrusionDepth?: number; // Configurable extrusion height
 }
 
+// Edge filter types for fillet/chamfer
+export type EdgeFilterType =
+  | 'ALL'           // All edges
+  | 'PARALLEL_XY'   // Edges parallel to XY plane
+  | 'PARALLEL_XZ'   // Edges parallel to XZ plane
+  | 'PARALLEL_YZ'   // Edges parallel to YZ plane
+  | 'VERTICAL'      // Edges parallel to Z axis
+  | 'HORIZONTAL';   // Edges perpendicular to Z axis
+
 export interface Feature {
   id: string;
   name: string; // Display name
   sketch: SketchState;
-  
+
   // Feature Properties
-  featureType: 'EXTRUDE' | 'REVOLVE' | 'SKETCH' | 'LOFT'; // SKETCH is for standalone sketches (for loft/sweep)
+  featureType: 'EXTRUDE' | 'REVOLVE' | 'SKETCH' | 'LOFT' | 'FILLET'; // SKETCH is for standalone sketches (for loft/sweep)
   operation: 'NEW' | 'CUT'; // Additive or Subtractive
   transform: number[]; // 16-element Matrix4 array
 
   // Extrude Params
   extrusionDepth: number;
-  throughAll: boolean;      
+  throughAll: boolean;
 
   // Revolve Params
   revolveAngle?: number; // In degrees (360 default)
   revolveAxisId?: string; // ID of the line used as axis
-  
+
   // Loft Params
   loftSketchIds?: string[]; // IDs of sketch features to loft between (ordered)
+
+  // Fillet/Chamfer Params
+  filletRadius?: number;          // Radius for fillet or distance for chamfer
+  filletType?: 'fillet' | 'chamfer'; // Type of edge modification
+  edgeFilter?: EdgeFilterType;    // Which edges to apply to
   
   // Parametric dependencies (for sketches on faces)
   parentFeatureId?: string; // ID of feature this was sketched on
