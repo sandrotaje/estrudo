@@ -1090,6 +1090,30 @@ const App: React.FC = () => {
     setViewMode("2D");
   };
 
+  const handleExtrudeFace = (
+    lines: Line[],
+    points: Point[],
+    transform: number[],
+    arcs: Arc[],
+    circles: Circle[],
+    parentFeatureId?: string,
+    faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
+  ) => {
+    // Similar to handleSketchOnFace but stays in 3D mode for direct extrusion
+    pendingParentInfoRef.current = { parentFeatureId, faceSelectionData };
+
+    setEditingFeatureId(null);
+    setCurrentTransform(transform);
+    setState({
+      ...INITIAL_STATE,
+      points: points,
+      lines: lines,
+      arcs: arcs || [],
+      circles: circles || [],
+    });
+    // Stay in 3D mode - the config panel will open automatically
+  };
+
   const handleStartSketchOnPlane = (transform: number[]) => {
     // Clear any pending parent info since this is a base plane sketch
     pendingParentInfoRef.current = {};
@@ -2129,6 +2153,7 @@ const App: React.FC = () => {
                   onCommitExtrusion={handleCommitFeature}
                   onUpdateFeatureParams={handleUpdateFeatureParams}
                   onSketchOnFace={handleSketchOnFace}
+                  onExtrudeFace={handleExtrudeFace}
                   onStartSketchOnPlane={handleStartSketchOnPlane}
                   onReimportFaceEdges={handleReimportFaceEdges}
                   onClose={() => setViewMode("2D")}

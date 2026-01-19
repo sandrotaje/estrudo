@@ -35,6 +35,7 @@ type ThreeViewOverlayProps = {
   onCommit: () => void;
   onEditSketch: () => void;
   onCreateSketchOnFace: () => void;
+  onExtrudeFace: () => void;
   onStartReimport: () => void;
   onCancelReimport: () => void;
   hasFeatures: boolean;
@@ -74,6 +75,7 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onCommit,
   onEditSketch,
   onCreateSketchOnFace,
+  onExtrudeFace,
   onStartReimport,
   onCancelReimport,
   hasFeatures,
@@ -207,7 +209,7 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
       )}
 
 
-      {/* New Sketch / Loft Buttons (When features exist but no active sketch) */}
+      {/* New Sketch / Face Actions / Loft Buttons (When features exist but no active sketch) */}
       {!isConfigOpen && !hasActiveSketch && hasFeatures && onNewSketchOnPlane && (
         <div className="absolute top-4 left-4 z-10 animate-in fade-in flex flex-col gap-2">
           <button
@@ -220,6 +222,30 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
               <span className="text-[9px] opacity-80">On plane (XY, XZ, YZ)</span>
             </div>
           </button>
+          {selectedFaceData && (
+            <>
+              <button
+                onClick={onCreateSketchOnFace}
+                className="flex items-center gap-3 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg transition-all"
+              >
+                <span className="text-xl">✏️</span>
+                <div className="flex flex-col text-left">
+                  <span className="text-xs font-bold uppercase">Sketch on Face</span>
+                  <span className="text-[9px] opacity-80">Draw on selected face</span>
+                </div>
+              </button>
+              <button
+                onClick={onExtrudeFace}
+                className="flex items-center gap-3 px-4 py-3 bg-green-600 hover:bg-green-500 text-white rounded-xl shadow-lg transition-all"
+              >
+                <span className="text-xl">⬆</span>
+                <div className="flex flex-col text-left">
+                  <span className="text-xs font-bold uppercase">Extrude</span>
+                  <span className="text-[9px] opacity-80">Extrude selected face</span>
+                </div>
+              </button>
+            </>
+          )}
           {canLoft && (
             <button
               onClick={() => {
@@ -517,29 +543,6 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
         </div>
       )}
 
-      {selectedFaceData && !isConfigOpen && (
-        <div
-          className="absolute z-20 bg-black/80 backdrop-blur border border-blue-500/50 text-white p-2 rounded-lg shadow-lg pointer-events-none"
-          style={{
-            left: "50%",
-            top: "50%",
-            transform: "translate(-50%, -50%)",
-          }}
-        >
-          <div className="text-xs font-bold mb-1 text-blue-300 text-center">
-            Face Selected
-          </div>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onCreateSketchOnFace();
-            }}
-            className="pointer-events-auto bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded shadow-lg"
-          >
-            Sketch on Face
-          </button>
-        </div>
-      )}
     </>
   );
 };

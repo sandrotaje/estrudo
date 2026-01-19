@@ -51,6 +51,15 @@ interface ThreeViewProps {
     parentFeatureId?: string,
     faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
   ) => void;
+  onExtrudeFace?: (
+    lines: Line[],
+    points: Point[],
+    transform: number[],
+    arcs: Arc[],
+    circles: Circle[],
+    parentFeatureId?: string,
+    faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
+  ) => void;
   onReimportFaceEdges?: (
     newLines: Line[],
     newPoints: Point[],
@@ -74,6 +83,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   onCommitExtrusion,
   onUpdateFeatureParams,
   onSketchOnFace,
+  onExtrudeFace,
   onReimportFaceEdges,
   onClose,
   onStartSketchOnPlane,
@@ -910,6 +920,51 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     );
   };
 
+  const handleExtrudeFace = () => {
+    if (!selectedFaceData || !onExtrudeFace) return;
+    const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(selectedFaceData);
+
+    // Convert projected geometry from construction to actual geometry for extrusion
+    const extrudeLines = projectedLines.map(l => ({ ...l, construction: false }));
+    const extrudeCircles = (projectedCircles || []).map(c => ({ ...c, construction: false }));
+    const extrudeArcs = (projectedArcs || []).map(a => ({ ...a, construction: false }));
+
+    // Try to find the Replicad face index if we have the parent shape
+    let faceIndex: number | undefined;
+    if (selectedFaceData.featureId && featureShapesMapRef.current.has(selectedFaceData.featureId)) {
+      const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
+
+      try {
+        const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
+        faceIndex = findReplicadFaceIndex(parentShape, selectedFaceData.point, selectedFaceData.normal);
+      } catch (e) {
+        console.warn("Could not find face index:", e);
+      }
+    }
+
+    // Extract robust face descriptor
+    const faceDescriptor = {
+      point: selectedFaceData.point.toArray() as [number, number, number],
+      normal: selectedFaceData.normal.toArray() as [number, number, number],
+      faceIndex
+    };
+
+    onExtrudeFace(
+      extrudeLines,
+      projectedPoints,
+      localToWorld.toArray(),
+      extrudeArcs,
+      extrudeCircles,
+      selectedFaceData.featureId,
+      faceDescriptor
+    );
+
+    // Open the extrude config panel after setting up the face sketch
+    setFeatureType("EXTRUDE");
+    setIsConfigOpen(true);
+    setSelectedFaceData(null);
+  };
+
   const hasActiveSketch = state.lines.length > 0 || state.circles.length > 0;
   
   // Determine if warning should be shown
@@ -960,6 +1015,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onCommit={handleCommit}
         onEditSketch={handleEditSketch}
         onCreateSketchOnFace={handleCreateSketchOnFace}
+        onExtrudeFace={handleExtrudeFace}
         onStartReimport={() => setIsReimportMode(true)}
         onCancelReimport={() => setIsReimportMode(false)}
         hasFeatures={features.length > 0}
