@@ -948,26 +948,29 @@ const App: React.FC = () => {
     depth: number,
     operation: "NEW" | "CUT",
     throughAll: boolean,
-    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH" | "LOFT",
+    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH" | "LOFT" | "SWEEP",
     revolveAngle?: number,
     revolveAxisId?: string,
-    loftSketchIds?: string[]
+    loftSketchIds?: string[],
+    sweepProfileSketchId?: string,
+    sweepPathSketchId?: string,
+    sweepPathId?: string
   ) => {
     const now = Date.now();
     const existingFeature = editingFeatureId ? features.find((f) => f.id === editingFeatureId) : null;
     
+    const featureTypeName =
+      operation === "CUT" ? "Cut" :
+      featureType === "SKETCH" ? "Sketch" :
+      featureType === "REVOLVE" ? "Revolve" :
+      featureType === "LOFT" ? "Loft" :
+      featureType === "SWEEP" ? "Sweep" : "Extrude";
+
     const newFeature: Feature = {
       id: editingFeatureId || `f_${now}`,
       name: editingFeatureId
-        ? existingFeature?.name ||
-          (operation === "CUT"
-            ? "Cut"
-            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude")
-        : `${
-            operation === "CUT"
-              ? "Cut"
-              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude"
-          } ${features.length + 1}`,
+        ? existingFeature?.name || featureTypeName
+        : `${featureTypeName} ${features.length + 1}`,
       sketch: { ...state, extrusionDepth: depth },
       extrusionDepth: depth,
       operation: operation,
@@ -976,6 +979,9 @@ const App: React.FC = () => {
       revolveAngle: revolveAngle,
       revolveAxisId: revolveAxisId,
       loftSketchIds: loftSketchIds,
+      sweepProfileSketchId: sweepProfileSketchId,
+      sweepPathSketchId: sweepPathSketchId,
+      sweepPathId: sweepPathId,
       transform: currentTransform || [
         1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
       ],

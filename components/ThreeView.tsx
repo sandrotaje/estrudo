@@ -83,8 +83,9 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const mountRef = useRef<HTMLDivElement>(null);
 
   // Configuration State - Initialize with initialFeatureParams if available
-  const [featureType, setFeatureType] = useState<"EXTRUDE" | "REVOLVE" | "LOFT">(
-    initialFeatureParams?.featureType === "LOFT" ? "LOFT" : 
+  const [featureType, setFeatureType] = useState<"EXTRUDE" | "REVOLVE" | "LOFT" | "SWEEP">(
+    initialFeatureParams?.featureType === "LOFT" ? "LOFT" :
+    initialFeatureParams?.featureType === "SWEEP" ? "SWEEP" :
     initialFeatureParams?.featureType || "EXTRUDE"
   );
   const [localDepth, setLocalDepth] = useState(
@@ -107,6 +108,17 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // Loft State
   const [selectedLoftSketchIds, setSelectedLoftSketchIds] = useState<string[]>(
     initialFeatureParams?.loftSketchIds || []
+  );
+
+  // Sweep State
+  const [sweepProfileSketchId, setSweepProfileSketchId] = useState<string | null>(
+    initialFeatureParams?.sweepProfileSketchId || null
+  );
+  const [sweepPathSketchId, setSweepPathSketchId] = useState<string | null>(
+    initialFeatureParams?.sweepPathSketchId || null
+  );
+  const [sweepPathId, setSweepPathId] = useState<string | null>(
+    initialFeatureParams?.sweepPathId || null
   );
 
   // Axis Selection State
@@ -256,13 +268,20 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // Sync state when entering Edit Mode for an existing feature
   useEffect(() => {
     if (initialFeatureParams) {
-      setFeatureType(initialFeatureParams.featureType === "LOFT" ? "LOFT" : initialFeatureParams.featureType);
+      setFeatureType(
+        initialFeatureParams.featureType === "LOFT" ? "LOFT" :
+        initialFeatureParams.featureType === "SWEEP" ? "SWEEP" :
+        initialFeatureParams.featureType
+      );
       setLocalDepth(initialFeatureParams.extrusionDepth);
       setRevolveAngle(initialFeatureParams.revolveAngle || 360);
       setOperation(initialFeatureParams.operation);
       setThroughAll(initialFeatureParams.throughAll);
       setActiveAxisId(initialFeatureParams.revolveAxisId || null);
       setSelectedLoftSketchIds(initialFeatureParams.loftSketchIds || []);
+      setSweepProfileSketchId(initialFeatureParams.sweepProfileSketchId || null);
+      setSweepPathSketchId(initialFeatureParams.sweepPathSketchId || null);
+      setSweepPathId(initialFeatureParams.sweepPathId || null);
       setIsConfigOpen(true);
     }
   }, [initialFeatureParams]);
@@ -352,8 +371,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     let timeoutId: NodeJS.Timeout;
 
     const generatePreview = async () => {
-      // Skip preview for LOFT type (we don't have inline preview for loft yet)
-      if (featureType === "LOFT") {
+      // Skip preview for LOFT and SWEEP types (we don't have inline preview for these yet)
+      if (featureType === "LOFT" || featureType === "SWEEP") {
         setPreviewGeometry(null);
         setErrorMsg(null);
         setIsGeneratingPreview(false);
@@ -817,6 +836,28 @@ const ThreeView: React.FC<ThreeViewProps> = ({
       );
       setIsConfigOpen(false);
       setSelectedLoftSketchIds([]);
+    } else if (featureType === "SWEEP") {
+      // For sweep, we need profile sketch, path sketch, and path element
+      if (!sweepProfileSketchId || !sweepPathSketchId || !sweepPathId) {
+        setErrorMsg("Please select a profile sketch, path sketch, and path element");
+        return;
+      }
+      onCommitExtrusion(
+        0, // depth doesn't matter for sweep
+        operation,
+        false, // throughAll doesn't matter
+        "SWEEP",
+        undefined, // revolveAngle doesn't matter
+        undefined, // revolveAxisId doesn't matter
+        undefined, // loftSketchIds doesn't matter
+        sweepProfileSketchId,
+        sweepPathSketchId,
+        sweepPathId
+      );
+      setIsConfigOpen(false);
+      setSweepProfileSketchId(null);
+      setSweepPathSketchId(null);
+      setSweepPathId(null);
     } else if (!errorMsg) {
       onCommitExtrusion(
         localDepth,
@@ -856,6 +897,9 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         throughAll,
         revolveAxisId: activeAxisId || undefined,
         loftSketchIds: selectedLoftSketchIds,
+        sweepProfileSketchId: sweepProfileSketchId || undefined,
+        sweepPathSketchId: sweepPathSketchId || undefined,
+        sweepPathId: sweepPathId || undefined,
       });
     }
     onClose();
@@ -939,6 +983,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         revolveAngle={revolveAngle}
         activeAxisId={activeAxisId}
         lines={state.lines}
+        arcs={state.arcs}
         initialFeatureParams={initialFeatureParams}
         errorMsg={errorMsg}
         isGeneratingPreview={isGeneratingPreview}
@@ -948,6 +993,12 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         availableSketches={availableSketches}
         selectedLoftSketchIds={selectedLoftSketchIds}
         onToggleLoftSketch={handleToggleLoftSketch}
+        sweepProfileSketchId={sweepProfileSketchId}
+        sweepPathSketchId={sweepPathSketchId}
+        sweepPathId={sweepPathId}
+        onSetSweepProfileSketchId={setSweepProfileSketchId}
+        onSetSweepPathSketchId={setSweepPathSketchId}
+        onSetSweepPathId={setSweepPathId}
         onFitView={fitView}
         onExportSTL={handleExportSTL}
         onSetFeatureType={setFeatureType}

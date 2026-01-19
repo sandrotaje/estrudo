@@ -1,17 +1,18 @@
 import React from "react";
-import { Feature, Line } from "../../types";
+import { Feature, Line, Arc } from "../../types";
 
 type ThreeViewOverlayProps = {
   hasActiveSketch: boolean;
   isConfigOpen: boolean;
   selectedSketchElements: string[];
-  featureType: "EXTRUDE" | "REVOLVE" | "LOFT";
+  featureType: "EXTRUDE" | "REVOLVE" | "LOFT" | "SWEEP";
   operation: "NEW" | "CUT";
   throughAll: boolean;
   localDepth: number;
   revolveAngle: number;
   activeAxisId: string | null;
   lines: Line[];
+  arcs: Arc[];
   initialFeatureParams?: Feature;
   errorMsg: string | null;
   isGeneratingPreview?: boolean;
@@ -22,10 +23,17 @@ type ThreeViewOverlayProps = {
   availableSketches: Feature[];
   selectedLoftSketchIds: string[];
   onToggleLoftSketch: (sketchId: string) => void;
+  // Sweep props
+  sweepProfileSketchId: string | null;
+  sweepPathSketchId: string | null;
+  sweepPathId: string | null;
+  onSetSweepProfileSketchId: (value: string | null) => void;
+  onSetSweepPathSketchId: (value: string | null) => void;
+  onSetSweepPathId: (value: string | null) => void;
   // Callbacks
   onFitView: () => void;
   onExportSTL: () => void;
-  onSetFeatureType: (value: "EXTRUDE" | "REVOLVE" | "LOFT") => void;
+  onSetFeatureType: (value: "EXTRUDE" | "REVOLVE" | "LOFT" | "SWEEP") => void;
   onSetIsConfigOpen: (value: boolean) => void;
   onSetOperation: (value: "NEW" | "CUT") => void;
   onSetThroughAll: (value: boolean) => void;
@@ -53,6 +61,7 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   revolveAngle,
   activeAxisId,
   lines,
+  arcs,
   initialFeatureParams,
   errorMsg,
   isGeneratingPreview,
@@ -62,6 +71,12 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   availableSketches,
   selectedLoftSketchIds,
   onToggleLoftSketch,
+  sweepProfileSketchId,
+  sweepPathSketchId,
+  sweepPathId,
+  onSetSweepProfileSketchId,
+  onSetSweepPathSketchId,
+  onSetSweepPathId,
   onFitView,
   onExportSTL,
   onSetFeatureType,
@@ -81,7 +96,15 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onNewSketchOnPlane,
 }) => {
   const canLoft = availableSketches.length >= 2;
-  
+  const canSweep = availableSketches.length >= 1; // Need at least one profile sketch
+
+  // Get path elements from the selected path sketch
+  const selectedPathSketch = sweepPathSketchId
+    ? availableSketches.find((s) => s.id === sweepPathSketchId)
+    : null;
+  const pathLines = selectedPathSketch?.sketch.lines || [];
+  const pathArcs = selectedPathSketch?.sketch.arcs || [];
+
   return (
     <>
       <div className="absolute top-4 right-4 z-10 flex gap-2">
@@ -235,6 +258,21 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
               </div>
             </button>
           )}
+          {canSweep && (
+            <button
+              onClick={() => {
+                onSetFeatureType("SWEEP");
+                onSetIsConfigOpen(true);
+              }}
+              className="flex items-center gap-3 px-4 py-3 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl shadow-lg transition-all"
+            >
+              <span className="text-xl">🌀</span>
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-bold uppercase">Sweep</span>
+                <span className="text-[9px] opacity-80">Profile along path</span>
+              </div>
+            </button>
+          )}
         </div>
       )}
       {/* Config Panel (Extrude/Revolve/Loft) */}
@@ -291,10 +329,22 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
                 Loft
               </button>
             )}
+            {canSweep && (
+              <button
+                onClick={() => onSetFeatureType("SWEEP")}
+                className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                  featureType === "SWEEP"
+                    ? "bg-cyan-600 text-white"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                Sweep
+              </button>
+            )}
           </div>
 
-          {/* Operation Toggle (not for Loft) */}
-          {featureType !== "LOFT" && (
+          {/* Operation Toggle (not for Loft/Sweep) */}
+          {featureType !== "LOFT" && featureType !== "SWEEP" && (
             <div className="flex bg-[#000] p-1 rounded-lg">
               <button
                 onClick={() => onSetOperation("NEW")}
@@ -472,7 +522,101 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             </div>
           )}
 
-          {initialFeatureParams && featureType !== "LOFT" && (
+          {featureType === "SWEEP" && (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  Profile Sketch
+                </label>
+                <select
+                  value={sweepProfileSketchId || ""}
+                  onChange={(e) => onSetSweepProfileSketchId(e.target.value || null)}
+                  className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-xs text-gray-300 focus:outline-none"
+                >
+                  <option value="">Select Profile Sketch...</option>
+                  {availableSketches.map((sketch) => (
+                    <option key={sketch.id} value={sketch.id}>
+                      {sketch.name}
+                    </option>
+                  ))}
+                </select>
+                {!sweepProfileSketchId && (
+                  <p className="text-[10px] text-amber-400">
+                    Select a sketch to use as the profile
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  Path Sketch
+                </label>
+                <select
+                  value={sweepPathSketchId || ""}
+                  onChange={(e) => {
+                    onSetSweepPathSketchId(e.target.value || null);
+                    onSetSweepPathId(null); // Reset path when sketch changes
+                  }}
+                  className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-xs text-gray-300 focus:outline-none"
+                >
+                  <option value="">Select Path Sketch...</option>
+                  {availableSketches.map((sketch) => (
+                    <option key={sketch.id} value={sketch.id}>
+                      {sketch.name}
+                    </option>
+                  ))}
+                </select>
+                {!sweepPathSketchId && (
+                  <p className="text-[10px] text-amber-400">
+                    Select a sketch containing the path
+                  </p>
+                )}
+              </div>
+
+              {sweepPathSketchId && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                    Path Element (Line or Arc)
+                  </label>
+                  <select
+                    value={sweepPathId || ""}
+                    onChange={(e) => onSetSweepPathId(e.target.value || null)}
+                    className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-xs text-gray-300 focus:outline-none"
+                  >
+                    <option value="">Select Path...</option>
+                    {pathLines.map((line, i) => (
+                      <option key={line.id} value={line.id}>
+                        Line {i + 1} {line.construction ? "(Constr)" : ""}
+                      </option>
+                    ))}
+                    {pathArcs.map((arc, i) => (
+                      <option key={arc.id} value={arc.id}>
+                        Arc {i + 1} {arc.construction ? "(Constr)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {pathLines.length === 0 && pathArcs.length === 0 && (
+                    <p className="text-[10px] text-red-400">
+                      No lines or arcs in this sketch
+                    </p>
+                  )}
+                  {!sweepPathId && (pathLines.length > 0 || pathArcs.length > 0) && (
+                    <p className="text-[10px] text-amber-400">
+                      Select a line or arc to use as the sweep path
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {sweepProfileSketchId && sweepPathSketchId && sweepPathId && (
+                <p className="text-[10px] text-cyan-400">
+                  Ready to sweep profile along path
+                </p>
+              )}
+            </div>
+          )}
+
+          {initialFeatureParams && featureType !== "LOFT" && featureType !== "SWEEP" && (
             <div className="pt-2 border-t border-white/5">
               <button
                 onClick={onEditSketch}

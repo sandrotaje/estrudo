@@ -6,7 +6,7 @@ import { createReplicadProfiles } from "./replicadUtils";
 import { generateRevolveGeometry, getShapesFromSketch } from "./sketchGeometry";
 import { initReplicad } from "../../services/replicad";
 import { replicadToThree } from "./replicadThreeUtils";
-import { revolution, loft } from "replicad";
+import { revolution, loft, genericSweep, makeLine, makeThreePointArc, assembleWire } from "replicad";
 
 type UseHistoryCSGParams = {
   features: Feature[];
@@ -162,6 +162,9 @@ export const useHistoryCSG = ({
           revolveAngle: feature.revolveAngle,
           revolveAxisId: feature.revolveAxisId,
           loftSketchIds: feature.loftSketchIds,
+          sweepProfileSketchId: feature.sweepProfileSketchId,
+          sweepPathSketchId: feature.sweepPathSketchId,
+          sweepPathId: feature.sweepPathId,
           transform: feature.transform,
           lastModified: feature.lastModified,
           // Light-weight sketch signature
@@ -303,6 +306,211 @@ export const useHistoryCSG = ({
               console.error(`Failed to create loft for feature ${feature.name}:`, e);
               continue;
             }
+          } else if (feature.featureType === "SWEEP") {
+            // SWEEP processing: sweep a profile sketch along a path
+            console.log(`Processing SWEEP feature ${feature.name}`);
+
+            if (!feature.sweepProfileSketchId || !feature.sweepPathSketchId || !feature.sweepPathId) {
+              console.error(`SWEEP feature ${feature.name} requires profile sketch, path sketch, and path ID`);
+              continue;
+            }
+
+            // Get the profile sketch feature
+            const profileFeature = features.find(f => f.id === feature.sweepProfileSketchId);
+            if (!profileFeature || profileFeature.featureType !== "SKETCH") {
+              console.error(`SWEEP feature ${feature.name}: could not find profile sketch`);
+              continue;
+            }
+
+            // Get the path sketch feature
+            const pathSketchFeature = features.find(f => f.id === feature.sweepPathSketchId);
+            if (!pathSketchFeature || pathSketchFeature.featureType !== "SKETCH") {
+              console.error(`SWEEP feature ${feature.name}: could not find path sketch`);
+              continue;
+            }
+
+            try {
+              // 1. Create wire from profile sketch
+              const profileDrawings = createReplicadProfiles(profileFeature.sketch, {});
+              if (profileDrawings.length === 0) {
+                console.warn(`No profile drawing for sweep ${feature.name}`);
+                continue;
+              }
+
+              const profileDrawing = profileDrawings[0];
+              const profileSketch = profileDrawing.sketchOnPlane("XY", 0);
+              let profileWire = profileSketch.wire;
+
+              if (!profileWire) {
+                console.error(`Failed to get profile wire for sweep ${feature.name}`);
+                continue;
+              }
+
+              // Apply profile sketch's transform if not identity
+              const profileTransform = profileFeature.transform;
+              const profileMatrix = new THREE.Matrix4();
+              profileMatrix.fromArray(profileTransform);
+
+              const profileIsIdentity = profileTransform.every((v: number, i: number) =>
+                (i % 5 === 0 && Math.abs(v - 1) < 1e-10) || (i % 5 !== 0 && Math.abs(v) < 1e-10)
+              );
+
+              if (!profileIsIdentity) {
+                const position = new THREE.Vector3(profileTransform[12], profileTransform[13], profileTransform[14]);
+                const quaternion = new THREE.Quaternion();
+                const scale = new THREE.Vector3();
+                profileMatrix.decompose(new THREE.Vector3(), quaternion, scale);
+
+                const angle = 2 * Math.acos(Math.min(1, Math.max(-1, quaternion.w)));
+                const s = Math.sqrt(Math.max(0, 1 - quaternion.w * quaternion.w));
+                let axis: [number, number, number] = [0, 0, 1];
+                if (s > 0.001) {
+                  axis = [quaternion.x / s, quaternion.y / s, quaternion.z / s];
+                }
+
+                const angleDeg = angle * 180 / Math.PI;
+                if (angleDeg > 0.1) {
+                  profileWire = profileWire.rotate(angleDeg, [0, 0, 0], axis);
+                }
+                if (position.length() > 0.001) {
+                  profileWire = profileWire.translate(position.x, position.y, position.z);
+                }
+              }
+
+              // 2. Create wire from path (line or arc from path sketch)
+              const pathSketch = pathSketchFeature.sketch;
+              const pathLine = pathSketch.lines.find(l => l.id === feature.sweepPathId);
+              const pathArc = (pathSketch.arcs || []).find(a => a.id === feature.sweepPathId);
+
+              if (!pathLine && !pathArc) {
+                console.error(`Path element not found in path sketch for sweep ${feature.name}`);
+                continue;
+              }
+
+              // Create path wire using proper edge/wire creation
+              // Use negated Y to match visual direction (coordinate system difference)
+              let pathWire: any;
+
+              if (pathLine) {
+                const p1 = pathSketch.points.find(p => p.id === pathLine.p1);
+                const p2 = pathSketch.points.find(p => p.id === pathLine.p2);
+                if (!p1 || !p2) {
+                  console.error(`Path line points not found for sweep ${feature.name}`);
+                  continue;
+                }
+
+                // Negate Y for correct sweep direction
+                const lineEdge = makeLine([p1.x, -p1.y, 0], [p2.x, -p2.y, 0]);
+                pathWire = assembleWire([lineEdge]);
+                console.log(`Created line path wire from (${p1.x}, ${-p1.y}) to (${p2.x}, ${-p2.y}) [Y negated]`);
+              } else if (pathArc) {
+                const center = pathSketch.points.find(p => p.id === pathArc.center);
+                const p1 = pathSketch.points.find(p => p.id === pathArc.p1);
+                const p2 = pathSketch.points.find(p => p.id === pathArc.p2);
+                if (!center || !p1 || !p2) {
+                  console.error(`Path arc points not found for sweep ${feature.name}`);
+                  continue;
+                }
+
+                const startAngle = Math.atan2(p1.y - center.y, p1.x - center.x);
+                const endAngle = Math.atan2(p2.y - center.y, p2.x - center.x);
+                let midAngle = (startAngle + endAngle) / 2;
+
+                let angleDiff = endAngle - startAngle;
+                while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                midAngle = startAngle + angleDiff / 2;
+
+                const midX = center.x + pathArc.radius * Math.cos(midAngle);
+                const midY = center.y + pathArc.radius * Math.sin(midAngle);
+
+                // Negate Y for correct sweep direction
+                const arcEdge = makeThreePointArc(
+                  [p1.x, -p1.y, 0],
+                  [midX, -midY, 0],
+                  [p2.x, -p2.y, 0]
+                );
+                pathWire = assembleWire([arcEdge]);
+                console.log(`Created arc path wire [Y negated]`);
+              }
+
+              if (!pathWire) {
+                console.error(`Failed to create path wire for sweep ${feature.name}`);
+                continue;
+              }
+
+              // Apply path sketch's transform to path wire
+              const pathSketchTransform = pathSketchFeature.transform;
+              const pathSketchMatrix = new THREE.Matrix4();
+              pathSketchMatrix.fromArray(pathSketchTransform);
+
+              const pathSketchIsIdentity = pathSketchTransform.every((v, i) =>
+                (i % 5 === 0 && Math.abs(v - 1) < 1e-10) || (i % 5 !== 0 && Math.abs(v) < 1e-10)
+              );
+
+              if (!pathSketchIsIdentity) {
+                const position = new THREE.Vector3(pathSketchTransform[12], pathSketchTransform[13], pathSketchTransform[14]);
+                const quaternion = new THREE.Quaternion();
+                const scale = new THREE.Vector3();
+                pathSketchMatrix.decompose(new THREE.Vector3(), quaternion, scale);
+
+                const angle = 2 * Math.acos(Math.min(1, Math.max(-1, quaternion.w)));
+                const s = Math.sqrt(Math.max(0, 1 - quaternion.w * quaternion.w));
+                let axis: [number, number, number] = [0, 0, 1];
+                if (s > 0.001) {
+                  axis = [quaternion.x / s, quaternion.y / s, quaternion.z / s];
+                }
+
+                const angleDeg = angle * 180 / Math.PI;
+                if (angleDeg > 0.1) {
+                  pathWire = pathWire.rotate(angleDeg, [0, 0, 0], axis);
+                }
+                if (position.length() > 0.001) {
+                  pathWire = pathWire.translate(position.x, position.y, position.z);
+                }
+              }
+
+              // Calculate profile bounding box center to align path
+              const profileBBox = profileWire.boundingBox;
+              const profileCenterX = profileBBox.center[0];
+              const profileCenterY = profileBBox.center[1];
+              const profileCenterZ = profileBBox.center[2];
+              console.log(`Profile wire center: (${profileCenterX.toFixed(2)}, ${profileCenterY.toFixed(2)}, ${profileCenterZ.toFixed(2)})`);
+
+              // Get path start from bounding box (approximate)
+              const pathBBox = pathWire.boundingBox;
+              // Path starts at p1 which has negated Y, so use min/max to approximate
+              console.log(`Path wire bbox: center=(${pathBBox.center[0].toFixed(2)}, ${pathBBox.center[1].toFixed(2)}, ${pathBBox.center[2].toFixed(2)})`);
+
+              // Translate path so it starts at the profile center
+              // We need to move the path to align with the profile's position
+              // Since the path has negated Y, and profile is in original coords,
+              // we need to account for this
+              const pathStartApproxX = pathBBox.center[0] - pathBBox.width / 2;
+              const pathStartApproxY = pathBBox.center[1] - pathBBox.height / 2;
+
+              const dx = profileCenterX - pathStartApproxX;
+              const dy = profileCenterY - pathStartApproxY;
+              const dz = profileCenterZ - pathBBox.center[2];
+
+              console.log(`Translating path by (${dx.toFixed(2)}, ${dy.toFixed(2)}, ${dz.toFixed(2)}) to align with profile`);
+              pathWire = pathWire.translate(dx, dy, dz);
+
+              console.log(`Sweeping profile along path for ${feature.name}`);
+
+              // Perform sweep
+              const sweepConfig = {
+                frenet: true,
+                forceProfileSpineOthogonality: true,
+              };
+
+              currentFeatureShape = genericSweep(profileWire, pathWire, sweepConfig);
+              console.log(`Sweep succeeded for ${feature.name}!`);
+
+            } catch (e) {
+              console.error(`Failed to create sweep for feature ${feature.name}:`, e);
+              continue;
+            }
           } else {
             // Standard EXTRUDE/REVOLVE processing
             const drawings = createReplicadProfiles(feature.sketch, {
@@ -442,9 +650,9 @@ export const useHistoryCSG = ({
           }
 
           featureShape = currentFeatureShape;
-          
-          // Apply the feature's transformation matrix (skip for LOFT as transforms are applied per-sketch)
-          if (feature.featureType !== "LOFT" && featureShape) {
+
+          // Apply the feature's transformation matrix (skip for LOFT/SWEEP as transforms are applied per-element)
+          if (feature.featureType !== "LOFT" && feature.featureType !== "SWEEP" && featureShape) {
             const matrix = new THREE.Matrix4();
             matrix.fromArray(feature.transform);
             
