@@ -6,7 +6,7 @@ import { createReplicadProfiles } from "./replicadUtils";
 import { generateRevolveGeometry, getShapesFromSketch } from "./sketchGeometry";
 import { initReplicad } from "../../services/replicad";
 import { replicadToThree } from "./replicadThreeUtils";
-import { revolution, loft, EdgeFinder } from "replicad";
+import { revolution, loft, EdgeFinder, FaceFinder } from "replicad";
 
 type UseHistoryCSGParams = {
   features: Feature[];
@@ -230,6 +230,92 @@ export const useHistoryCSG = ({
           });
           
           group.add(sketchGroup);
+          continue;
+        }
+
+        // Handle SHELL feature type - modifies the current result shape
+        if (feature.featureType === "SHELL") {
+          console.log(`Processing SHELL feature ${feature.name}`);
+
+          if (!resultShape) {
+            console.error(`SHELL feature ${feature.name} requires existing geometry to shell`);
+            continue;
+          }
+
+          const thickness = feature.shellThickness || 2;
+          const faceData = feature.faceSelectionData;
+
+          if (!faceData) {
+            console.error(`SHELL feature ${feature.name} missing face selection data`);
+            continue;
+          }
+
+          try {
+            console.log(`  Shell thickness: ${thickness}mm`);
+            console.log(`  Face point: [${faceData.point.join(', ')}]`);
+            console.log(`  Face normal: [${faceData.normal.join(', ')}]`);
+
+            // Use the face normal to find the face to remove
+            // Create a FaceFinder that finds faces with matching normal
+            const normal = faceData.normal;
+            const point = faceData.point;
+
+            // Determine the plane type and offset from the normal
+            // We'll use parallelTo to find faces with the same normal direction
+            const absX = Math.abs(normal[0]);
+            const absY = Math.abs(normal[1]);
+            const absZ = Math.abs(normal[2]);
+
+            let faceFinder: any;
+
+            if (absZ > 0.9) {
+              // Face is roughly horizontal (XY plane)
+              faceFinder = (f: any) => f.inPlane("XY", point[2]);
+              console.log(`  Finding face in XY plane at Z=${point[2]}`);
+            } else if (absY > 0.9) {
+              // Face is in XZ plane
+              faceFinder = (f: any) => f.inPlane("XZ", point[1]);
+              console.log(`  Finding face in XZ plane at Y=${point[1]}`);
+            } else if (absX > 0.9) {
+              // Face is in YZ plane
+              faceFinder = (f: any) => f.inPlane("YZ", point[0]);
+              console.log(`  Finding face in YZ plane at X=${point[0]}`);
+            } else {
+              // For non-axis-aligned faces, use parallelTo with the normal
+              // and containsPoint to narrow down
+              console.log(`  Face is not axis-aligned, using parallelTo`);
+              faceFinder = (f: any) => f.parallelTo([normal[0], normal[1], normal[2]]).containsPoint(point);
+            }
+
+            // Apply the shell operation
+            // The shell method signature is: shell(thickness, finderFcn, tolerance?)
+            // Positive thickness = wall thickness going inward from original surface
+            resultShape = resultShape.shell(thickness, faceFinder, 0.01);
+
+            console.log(`  Shell operation succeeded`);
+
+            // Store the result for face extraction
+            featureShapesMap.set(feature.id, resultShape);
+
+            // Mark upstream as dirty since we modified the result
+            upstreamDirty = true;
+
+            // Update cache
+            const signature = JSON.stringify({
+              id: feature.id,
+              featureType: feature.featureType,
+              shellThickness: feature.shellThickness,
+              faceSelectionData: feature.faceSelectionData,
+              parentFeatureId: feature.parentFeatureId,
+              lastModified: feature.lastModified,
+            });
+            brushCache.current.set(feature.id, { shape: resultShape, signature });
+
+          } catch (e) {
+            console.error(`Shell operation failed for feature ${feature.name}:`, e);
+            // Continue without the shell - the geometry will be incomplete
+          }
+
           continue;
         }
 

@@ -29,6 +29,12 @@ type ThreeViewOverlayProps = {
   onSetFilletRadius: (value: number) => void;
   onSetFilletType: (value: "fillet" | "chamfer") => void;
   onSetEdgeFilter: (value: EdgeFilterType) => void;
+  // Shell props
+  isShellConfigOpen: boolean;
+  shellThickness: number;
+  onSetIsShellConfigOpen: (value: boolean) => void;
+  onSetShellThickness: (value: number) => void;
+  onCommitShell: () => void;
   // Callbacks
   onFitView: () => void;
   onExportSTL: () => void;
@@ -42,6 +48,7 @@ type ThreeViewOverlayProps = {
   onCommit: () => void;
   onEditSketch: () => void;
   onCreateSketchOnFace: () => void;
+  onExtrudeFace: () => void;
   onStartReimport: () => void;
   onCancelReimport: () => void;
   hasFeatures: boolean;
@@ -75,6 +82,11 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onSetFilletRadius,
   onSetFilletType,
   onSetEdgeFilter,
+  isShellConfigOpen,
+  shellThickness,
+  onSetIsShellConfigOpen,
+  onSetShellThickness,
+  onCommitShell,
   onFitView,
   onExportSTL,
   onSetFeatureType,
@@ -87,6 +99,7 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   onCommit,
   onEditSketch,
   onCreateSketchOnFace,
+  onExtrudeFace,
   onStartReimport,
   onCancelReimport,
   hasFeatures,
@@ -220,7 +233,7 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
       )}
 
 
-      {/* New Sketch / Loft Buttons (When features exist but no active sketch) */}
+      {/* New Sketch / Face Actions / Loft Buttons (When features exist but no active sketch) */}
       {!isConfigOpen && !hasActiveSketch && hasFeatures && onNewSketchOnPlane && (
         <div className="absolute top-4 left-4 z-10 animate-in fade-in flex flex-col gap-2">
           <button
@@ -233,6 +246,30 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
               <span className="text-[9px] opacity-80">On plane (XY, XZ, YZ)</span>
             </div>
           </button>
+          {selectedFaceData && (
+            <>
+              <button
+                onClick={onCreateSketchOnFace}
+                className="flex items-center gap-3 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg transition-all"
+              >
+                <span className="text-xl">✏️</span>
+                <div className="flex flex-col text-left">
+                  <span className="text-xs font-bold uppercase">Sketch on Face</span>
+                  <span className="text-[9px] opacity-80">Draw on selected face</span>
+                </div>
+              </button>
+              <button
+                onClick={onExtrudeFace}
+                className="flex items-center gap-3 px-4 py-3 bg-green-600 hover:bg-green-500 text-white rounded-xl shadow-lg transition-all"
+              >
+                <span className="text-xl">⬆</span>
+                <div className="flex flex-col text-left">
+                  <span className="text-xs font-bold uppercase">Extrude</span>
+                  <span className="text-[9px] opacity-80">Extrude selected face</span>
+                </div>
+              </button>
+            </>
+          )}
           {canLoft && (
             <button
               onClick={() => {
@@ -641,27 +678,115 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
         </div>
       )}
 
-      {selectedFaceData && !isConfigOpen && (
+      {selectedFaceData && !isConfigOpen && !isShellConfigOpen && (
         <div
-          className="absolute z-20 bg-black/80 backdrop-blur border border-blue-500/50 text-white p-2 rounded-lg shadow-lg pointer-events-none"
+          className="absolute z-20 bg-black/80 backdrop-blur border border-blue-500/50 text-white p-3 rounded-xl shadow-lg pointer-events-none"
           style={{
             left: "50%",
             top: "50%",
             transform: "translate(-50%, -50%)",
           }}
         >
-          <div className="text-xs font-bold mb-1 text-blue-300 text-center">
+          <div className="text-xs font-bold mb-2 text-blue-300 text-center">
             Face Selected
           </div>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onCreateSketchOnFace();
-            }}
-            className="pointer-events-auto bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded shadow-lg"
-          >
-            Sketch on Face
-          </button>
+          <div className="flex gap-2 pointer-events-auto">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onCreateSketchOnFace();
+              }}
+              className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded shadow-lg"
+            >
+              Sketch on Face
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onExtrudeFace();
+              }}
+              className="bg-green-600 hover:bg-green-500 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded shadow-lg"
+            >
+              Extrude Face
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onSetIsShellConfigOpen(true);
+              }}
+              className="bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded shadow-lg"
+            >
+              Shell
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Shell Config Panel */}
+      {isShellConfigOpen && (selectedFaceData || (initialFeatureParams?.featureType === "SHELL")) && (
+        <div
+          className="absolute top-4 left-4 z-10 bg-[#1a1a1a]/95 backdrop-blur-xl p-5 rounded-2xl border border-white/10 shadow-2xl w-72 flex flex-col gap-4 animate-in slide-in-from-left-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-white/5 pb-3">
+            <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+              <span className="text-lg">🔲</span> {initialFeatureParams?.featureType === "SHELL" ? "Edit Shell" : "Shell (Hollow)"}
+            </h3>
+          </div>
+
+          <p className="text-[10px] text-gray-400">
+            {initialFeatureParams?.featureType === "SHELL"
+              ? "Adjust the wall thickness of the shell feature."
+              : "Creates a hollow solid by removing the selected face and leaving walls of the specified thickness."}
+          </p>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+              Wall Thickness (mm)
+            </label>
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1">
+                <input
+                  type="number"
+                  min="0.1"
+                  max="100"
+                  step="0.1"
+                  value={shellThickness}
+                  onChange={(e) =>
+                    onSetShellThickness(parseFloat(e.target.value) || 2)
+                  }
+                  className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-sm font-mono text-amber-400 focus:outline-none focus:border-amber-500"
+                />
+                <span className="absolute right-3 top-2 text-xs text-gray-600 pointer-events-none">
+                  mm
+                </span>
+              </div>
+            </div>
+            <input
+              type="range"
+              min="0.5"
+              max="20"
+              step="0.5"
+              value={shellThickness}
+              onChange={(e) => onSetShellThickness(parseFloat(e.target.value))}
+              className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+            />
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={() => onSetIsShellConfigOpen(false)}
+              className="flex-1 py-2 rounded-lg bg-[#333] hover:bg-[#444] text-xs font-bold text-gray-300 uppercase"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onCommitShell}
+              className="flex-1 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white uppercase shadow-lg"
+            >
+              {initialFeatureParams?.featureType === "SHELL" ? "Save" : "Apply Shell"}
+            </button>
+          </div>
         </div>
       )}
     </>

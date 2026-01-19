@@ -80,7 +80,7 @@ export interface Feature {
   sketch: SketchState;
 
   // Feature Properties
-  featureType: 'EXTRUDE' | 'REVOLVE' | 'SKETCH' | 'LOFT' | 'FILLET'; // SKETCH is for standalone sketches (for loft/sweep)
+  featureType: 'EXTRUDE' | 'REVOLVE' | 'SKETCH' | 'LOFT' | 'FILLET' | 'SHELL'; // SKETCH is for standalone sketches (for loft/sweep)
   operation: 'NEW' | 'CUT'; // Additive or Subtractive
   transform: number[]; // 16-element Matrix4 array
 
@@ -99,6 +99,10 @@ export interface Feature {
   filletRadius?: number;          // Radius for fillet or distance for chamfer
   filletType?: 'fillet' | 'chamfer'; // Type of edge modification
   edgeFilter?: EdgeFilterType;    // Which edges to apply to
+
+  // Shell Params
+  shellThickness?: number; // Wall thickness in mm
+  shellOpenFaceIndex?: number; // Index of the face to remove (make opening)
   
   // Parametric dependencies (for sketches on faces)
   parentFeatureId?: string; // ID of feature this was sketched on

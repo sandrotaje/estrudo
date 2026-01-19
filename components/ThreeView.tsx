@@ -52,6 +52,15 @@ interface ThreeViewProps {
     parentFeatureId?: string,
     faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
   ) => void;
+  onExtrudeFace?: (
+    lines: Line[],
+    points: Point[],
+    transform: number[],
+    arcs: Arc[],
+    circles: Circle[],
+    parentFeatureId?: string,
+    faceSelectionData?: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
+  ) => void;
   onReimportFaceEdges?: (
     newLines: Line[],
     newPoints: Point[],
@@ -59,6 +68,12 @@ interface ThreeViewProps {
     newCircles?: Circle[],
     newArcs?: Arc[]
   ) => void;
+  onCommitShellFeature?: (
+    thickness: number,
+    parentFeatureId: string,
+    faceSelectionData: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
+  ) => void;
+  onFinishShellEdit?: () => void;
   onClose: () => void;
   onStartSketchOnPlane?: (transform: number[]) => void;
   onEditFeature?: (id: string) => void;
@@ -75,7 +90,10 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   onCommitExtrusion,
   onUpdateFeatureParams,
   onSketchOnFace,
+  onExtrudeFace,
   onReimportFaceEdges,
+  onCommitShellFeature,
+  onFinishShellEdit,
   onClose,
   onStartSketchOnPlane,
   onFeatureShapesReady,
@@ -141,6 +159,10 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // Re-import mode for updating projected face edges
   const [isReimportMode, setIsReimportMode] = useState(false);
   const [showPlaneSelector, setShowPlaneSelector] = useState(false);
+
+  // Shell state
+  const [isShellConfigOpen, setIsShellConfigOpen] = useState(false);
+  const [shellThickness, setShellThickness] = useState(2);
 
   const [selectedFaceData, setSelectedFaceData] = useState<{
     point: THREE.Vector3;
@@ -269,21 +291,29 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   // Sync state when entering Edit Mode for an existing feature
   useEffect(() => {
     if (initialFeatureParams) {
-      setFeatureType(
-        initialFeatureParams.featureType === "LOFT" ? "LOFT" :
-        initialFeatureParams.featureType === "FILLET" ? "FILLET" :
-        initialFeatureParams.featureType
-      );
-      setLocalDepth(initialFeatureParams.extrusionDepth);
-      setRevolveAngle(initialFeatureParams.revolveAngle || 360);
-      setOperation(initialFeatureParams.operation);
-      setThroughAll(initialFeatureParams.throughAll);
-      setActiveAxisId(initialFeatureParams.revolveAxisId || null);
-      setSelectedLoftSketchIds(initialFeatureParams.loftSketchIds || []);
-      setFilletRadius(initialFeatureParams.filletRadius || 5);
-      setFilletType(initialFeatureParams.filletType || "fillet");
-      setEdgeFilter(initialFeatureParams.edgeFilter || "ALL");
-      setIsConfigOpen(true);
+      if (initialFeatureParams.featureType === "SHELL") {
+        // For SHELL features, open shell config panel
+        setShellThickness(initialFeatureParams.shellThickness || 2);
+        setIsShellConfigOpen(true);
+        setIsConfigOpen(false);
+      } else {
+        setFeatureType(
+          initialFeatureParams.featureType === "LOFT" ? "LOFT" :
+          initialFeatureParams.featureType === "FILLET" ? "FILLET" :
+          initialFeatureParams.featureType
+        );
+        setLocalDepth(initialFeatureParams.extrusionDepth);
+        setRevolveAngle(initialFeatureParams.revolveAngle || 360);
+        setOperation(initialFeatureParams.operation);
+        setThroughAll(initialFeatureParams.throughAll);
+        setActiveAxisId(initialFeatureParams.revolveAxisId || null);
+        setSelectedLoftSketchIds(initialFeatureParams.loftSketchIds || []);
+        setFilletRadius(initialFeatureParams.filletRadius || 5);
+        setFilletType(initialFeatureParams.filletType || "fillet");
+        setEdgeFilter(initialFeatureParams.edgeFilter || "ALL");
+        setIsConfigOpen(true);
+        setIsShellConfigOpen(false);
+      }
     }
   }, [initialFeatureParams]);
 
@@ -540,6 +570,100 @@ const ThreeView: React.FC<ThreeViewProps> = ({
     setErrorMsg(errorMsg);
   }, [errorMsg]);
 
+  // Shell Preview Generation
+  useEffect(() => {
+    let active = true;
+    let timeoutId: NodeJS.Timeout;
+
+    const generateShellPreview = async () => {
+      if (!isShellConfigOpen) {
+        setPreviewGeometry(null);
+        setIsGeneratingPreview(false);
+        return;
+      }
+
+      // Get the base shape to apply shell to
+      const baseShape = lastResultShapeRef.current;
+      if (!baseShape) {
+        setPreviewGeometry(null);
+        setIsGeneratingPreview(false);
+        return;
+      }
+
+      // Get face data - either from selected face (new) or from feature being edited
+      const faceData = selectedFaceData
+        ? {
+            point: selectedFaceData.point.toArray() as [number, number, number],
+            normal: selectedFaceData.normal.toArray() as [number, number, number],
+          }
+        : initialFeatureParams?.faceSelectionData;
+
+      if (!faceData) {
+        setPreviewGeometry(null);
+        setIsGeneratingPreview(false);
+        return;
+      }
+
+      setIsGeneratingPreview(true);
+
+      try {
+        const normal = faceData.normal;
+        const point = faceData.point;
+
+        // Determine face finder based on normal direction
+        const absX = Math.abs(normal[0]);
+        const absY = Math.abs(normal[1]);
+        const absZ = Math.abs(normal[2]);
+
+        let faceFinder: any;
+
+        if (absZ > 0.9) {
+          faceFinder = (f: any) => f.inPlane("XY", point[2]);
+        } else if (absY > 0.9) {
+          faceFinder = (f: any) => f.inPlane("XZ", point[1]);
+        } else if (absX > 0.9) {
+          faceFinder = (f: any) => f.inPlane("YZ", point[0]);
+        } else {
+          faceFinder = (f: any) => f.parallelTo([normal[0], normal[1], normal[2]]).containsPoint(point);
+        }
+
+        // Apply shell operation
+        const shelledShape = baseShape.shell(shellThickness, faceFinder, 0.01);
+
+        if (!active) return;
+
+        // Convert to THREE geometry with preview quality (higher tolerance for speed)
+        const geometry = replicadToThree(shelledShape, 2.0, 0.8);
+
+        setPreviewGeometry(geometry);
+        setErrorMsg(null);
+        setIsGeneratingPreview(false);
+      } catch (e) {
+        if (!active) return;
+        console.error("Shell preview failed:", e);
+        setPreviewGeometry(null);
+        setErrorMsg("Shell preview failed. Try adjusting thickness.");
+        setIsGeneratingPreview(false);
+      }
+    };
+
+    // Debounce shell preview by 300ms
+    timeoutId = setTimeout(() => {
+      generateShellPreview();
+    }, 300);
+
+    return () => {
+      active = false;
+      clearTimeout(timeoutId);
+    };
+  }, [isShellConfigOpen, shellThickness, selectedFaceData, initialFeatureParams]);
+
+  // Hide history mesh when showing shell preview to avoid z-fighting
+  useEffect(() => {
+    if (!historyGroupRef.current) return;
+    historyGroupRef.current.visible = !(isShellConfigOpen && previewGeometry);
+  }, [isShellConfigOpen, previewGeometry]);
+
   useAxisVisualization({
     axisHelperGroupRef,
     state,
@@ -552,8 +676,8 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   usePreviewMesh({
     meshGroupRef,
     previewGeometry,
-    // For FILLET, don't apply transform as the shape is already in world coordinates
-    currentTransform: featureType === "FILLET" ? undefined : currentTransform,
+    // For FILLET or SHELL, don't apply transform as the shape is already in world coordinates
+    currentTransform: featureType === "FILLET" || isShellConfigOpen ? undefined : currentTransform,
     operation: featureType === "FILLET" ? "NEW" : operation,
     // Pink color for fillet preview
     previewColor: featureType === "FILLET" ? 0xec4899 : undefined,
@@ -987,12 +1111,12 @@ const ThreeView: React.FC<ThreeViewProps> = ({
   const handleCreateSketchOnFace = () => {
     if (!selectedFaceData || !onSketchOnFace) return;
     const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(selectedFaceData);
-    
+
     // Try to find the Replicad face index if we have the parent shape
     let faceIndex: number | undefined;
     if (selectedFaceData.featureId && featureShapesMapRef.current.has(selectedFaceData.featureId)) {
       const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
-      
+
       // Import and use the face index matching utility
       import('../utils/faceIndexMatching').then(({ findReplicadFaceIndex }) => {
         const matchedIndex = findReplicadFaceIndex(
@@ -1000,12 +1124,12 @@ const ThreeView: React.FC<ThreeViewProps> = ({
           selectedFaceData.point,
           selectedFaceData.normal
         );
-        
+
         if (matchedIndex !== undefined) {
           console.log(`Matched face to Replicad index: ${matchedIndex}`);
         }
       }).catch(console.error);
-      
+
       // For now, do synchronous version - we'll refactor if needed
       try {
         const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
@@ -1014,7 +1138,7 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         console.warn("Could not find face index:", e);
       }
     }
-    
+
     // Extract robust face descriptor
     const faceDescriptor = {
       point: selectedFaceData.point.toArray() as [number, number, number],
@@ -1031,6 +1155,97 @@ const ThreeView: React.FC<ThreeViewProps> = ({
       selectedFaceData.featureId, // Now we have the parent feature ID!
       faceDescriptor
     );
+  };
+
+  const handleExtrudeFace = () => {
+    if (!selectedFaceData || !onExtrudeFace) return;
+    const { projectedLines, projectedPoints, projectedCircles, projectedArcs, localToWorld } = projectFaceEdges(selectedFaceData);
+
+    // Convert projected geometry from construction to actual geometry for extrusion
+    const extrudeLines = projectedLines.map(l => ({ ...l, construction: false }));
+    const extrudeCircles = (projectedCircles || []).map(c => ({ ...c, construction: false }));
+    const extrudeArcs = (projectedArcs || []).map(a => ({ ...a, construction: false }));
+
+    // Try to find the Replicad face index if we have the parent shape
+    let faceIndex: number | undefined;
+    if (selectedFaceData.featureId && featureShapesMapRef.current.has(selectedFaceData.featureId)) {
+      const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
+
+      try {
+        const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
+        faceIndex = findReplicadFaceIndex(parentShape, selectedFaceData.point, selectedFaceData.normal);
+      } catch (e) {
+        console.warn("Could not find face index:", e);
+      }
+    }
+
+    // Extract robust face descriptor
+    const faceDescriptor = {
+      point: selectedFaceData.point.toArray() as [number, number, number],
+      normal: selectedFaceData.normal.toArray() as [number, number, number],
+      faceIndex
+    };
+
+    onExtrudeFace(
+      extrudeLines,
+      projectedPoints,
+      localToWorld.toArray(),
+      extrudeArcs,
+      extrudeCircles,
+      selectedFaceData.featureId,
+      faceDescriptor
+    );
+
+    // Open the extrude config panel after setting up the face sketch
+    setFeatureType("EXTRUDE");
+    setIsConfigOpen(true);
+    setSelectedFaceData(null);
+  };
+
+  const handleCommitShell = () => {
+    // If editing an existing shell feature, update it
+    if (initialFeatureParams?.featureType === "SHELL" && onUpdateFeatureParams) {
+      onUpdateFeatureParams(initialFeatureParams.id, {
+        shellThickness: shellThickness,
+        lastModified: Date.now(),
+      });
+      setIsShellConfigOpen(false);
+      // Use onFinishShellEdit to stay in 3D view (just clears editing state)
+      if (onFinishShellEdit) {
+        onFinishShellEdit();
+      }
+      return;
+    }
+
+    // Creating a new shell feature
+    if (!selectedFaceData || !onCommitShellFeature || !selectedFaceData.featureId) return;
+
+    // Find the Replicad face index
+    let faceIndex: number | undefined;
+    if (featureShapesMapRef.current.has(selectedFaceData.featureId)) {
+      const parentShape = featureShapesMapRef.current.get(selectedFaceData.featureId);
+      try {
+        const { findReplicadFaceIndex } = require('../utils/faceIndexMatching');
+        faceIndex = findReplicadFaceIndex(parentShape, selectedFaceData.point, selectedFaceData.normal);
+      } catch (e) {
+        console.warn("Could not find face index for shell:", e);
+      }
+    }
+
+    const faceDescriptor = {
+      point: selectedFaceData.point.toArray() as [number, number, number],
+      normal: selectedFaceData.normal.toArray() as [number, number, number],
+      faceIndex
+    };
+
+    onCommitShellFeature(
+      shellThickness,
+      selectedFaceData.featureId,
+      faceDescriptor
+    );
+
+    setIsShellConfigOpen(false);
+    setSelectedFaceData(null);
   };
 
   const hasActiveSketch = state.lines.length > 0 || state.circles.length > 0;
@@ -1089,11 +1304,17 @@ const ThreeView: React.FC<ThreeViewProps> = ({
         onCommit={handleCommit}
         onEditSketch={handleEditSketch}
         onCreateSketchOnFace={handleCreateSketchOnFace}
+        onExtrudeFace={handleExtrudeFace}
         onStartReimport={() => setIsReimportMode(true)}
         onCancelReimport={() => setIsReimportMode(false)}
         hasFeatures={features.length > 0}
         onCommitSketchOnly={handleCommitSketchOnly}
         onNewSketchOnPlane={() => setShowPlaneSelector(true)}
+        isShellConfigOpen={isShellConfigOpen}
+        shellThickness={shellThickness}
+        onSetIsShellConfigOpen={setIsShellConfigOpen}
+        onSetShellThickness={setShellThickness}
+        onCommitShell={handleCommitShell}
       />
       {!hasActiveSketch && !initialFeatureParams && onStartSketchOnPlane && (showPlaneSelector || features.length === 0) && (
         <PlaneSelector
