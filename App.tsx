@@ -943,6 +943,35 @@ const App: React.FC = () => {
     );
   };
 
+  // SHELL Feature Commit Logic
+  const handleCommitShellFeature = (
+    thickness: number,
+    parentFeatureId: string,
+    faceSelectionData: { point: [number, number, number]; normal: [number, number, number]; faceIndex?: number }
+  ) => {
+    const now = Date.now();
+
+    const newFeature: Feature = {
+      id: `f_${now}`,
+      name: `Shell ${features.length + 1}`,
+      sketch: INITIAL_STATE, // Shell doesn't need a sketch
+      extrusionDepth: 0,
+      operation: "NEW",
+      throughAll: false,
+      featureType: "SHELL",
+      transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], // Identity matrix
+      parentFeatureId: parentFeatureId,
+      faceSelectionData: faceSelectionData,
+      shellThickness: thickness,
+      shellOpenFaceIndex: faceSelectionData.faceIndex,
+      createdAt: now,
+      lastModified: now,
+    };
+
+    setFeatures((prev) => [...prev, newFeature]);
+    setViewMode("3D");
+  };
+
   // COMMIT Logic
   const handleCommitFeature = (
     depth: number,
@@ -2156,6 +2185,8 @@ const App: React.FC = () => {
                   onExtrudeFace={handleExtrudeFace}
                   onStartSketchOnPlane={handleStartSketchOnPlane}
                   onReimportFaceEdges={handleReimportFaceEdges}
+                  onCommitShellFeature={handleCommitShellFeature}
+                  onFinishShellEdit={() => setEditingFeatureId(null)}
                   onClose={() => setViewMode("2D")}
                   onEditFeature={handleLoadFeature}
                   onFeatureShapesReady={(shapes) => {
