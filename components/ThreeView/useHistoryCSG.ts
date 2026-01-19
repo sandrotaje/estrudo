@@ -1,12 +1,12 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 import * as THREE from "three";
-import type { Feature } from "../../types";
+import type { Feature, EdgeFilterType } from "../../types";
 import { clearThreeGroup } from "./threeUtils";
 import { createReplicadProfiles } from "./replicadUtils";
 import { generateRevolveGeometry, getShapesFromSketch } from "./sketchGeometry";
 import { initReplicad } from "../../services/replicad";
 import { replicadToThree } from "./replicadThreeUtils";
-import { revolution, loft, FaceFinder } from "replicad";
+import { revolution, loft, EdgeFinder, FaceFinder } from "replicad";
 
 type UseHistoryCSGParams = {
   features: Feature[];
@@ -65,6 +65,86 @@ export const useHistoryCSG = ({
       const featureShapesMap = new Map<string, any>();
 
       for (const feature of features) {
+        // Handle FILLET feature type - modifies existing geometry
+        if (feature.featureType === "FILLET") {
+          if (!resultShape) {
+            console.warn(`FILLET feature ${feature.name} skipped - no existing geometry to fillet`);
+            continue;
+          }
+
+          console.log(`Processing FILLET feature ${feature.name}`);
+          const radius = feature.filletRadius || 2;
+          const type = feature.filletType || 'fillet';
+          const edgeFilter = feature.edgeFilter || 'ALL';
+
+          try {
+            let modifiedShape: any;
+
+            // Create edge filter function based on edgeFilter setting
+            const edgeFilterFn = (ef: typeof EdgeFinder.prototype): typeof EdgeFinder.prototype => {
+              switch (edgeFilter) {
+                case 'PARALLEL_XY':
+                  // Edges that lie in planes parallel to XY (horizontal edges)
+                  return ef.parallelTo("XY");
+                case 'PARALLEL_XZ':
+                  return ef.parallelTo("XZ");
+                case 'PARALLEL_YZ':
+                  return ef.parallelTo("YZ");
+                case 'VERTICAL':
+                  // Edges in the Z direction
+                  return ef.inDirection([0, 0, 1]);
+                case 'HORIZONTAL':
+                  // Edges perpendicular to Z (in XY plane direction)
+                  // Use atAngleWith to find edges at 90 degrees to Z axis
+                  return ef.atAngleWith([0, 0, 1], 90);
+                case 'ALL':
+                default:
+                  return ef;
+              }
+            };
+
+            if (type === 'fillet') {
+              if (edgeFilter === 'ALL') {
+                modifiedShape = resultShape.fillet(radius);
+              } else {
+                modifiedShape = resultShape.fillet(radius, edgeFilterFn);
+              }
+              console.log(`Applied fillet with radius ${radius}mm to ${edgeFilter} edges`);
+            } else {
+              // chamfer (bevel)
+              if (edgeFilter === 'ALL') {
+                modifiedShape = resultShape.chamfer(radius);
+              } else {
+                modifiedShape = resultShape.chamfer(radius, edgeFilterFn);
+              }
+              console.log(`Applied chamfer with distance ${radius}mm to ${edgeFilter} edges`);
+            }
+
+            resultShape = modifiedShape;
+
+            // Store the modified shape for this feature
+            featureShapesMap.set(feature.id, modifiedShape);
+
+            // Update cache
+            const signature = JSON.stringify({
+              id: feature.id,
+              featureType: feature.featureType,
+              filletRadius: radius,
+              filletType: type,
+              edgeFilter: edgeFilter,
+              lastModified: feature.lastModified,
+            });
+            brushCache.current.set(feature.id, { shape: modifiedShape, signature });
+            upstreamDirty = true;
+
+          } catch (e) {
+            console.error(`Failed to apply ${type} for feature ${feature.name}:`, e);
+            // If fillet/chamfer fails (e.g., radius too large), skip this feature
+          }
+
+          continue;
+        }
+
         // Render SKETCH features as 3D line visualization (no solid geometry)
         if (feature.featureType === "SKETCH") {
           console.log(`Rendering SKETCH feature ${feature.name} as line visualization`);

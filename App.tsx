@@ -9,6 +9,7 @@ import {
   SketchState,
   Feature,
   Arc,
+  EdgeFilterType,
 } from "./types";
 import { ConstraintSolver } from "./services/constraintSolver";
 import SketchCanvas from "./components/SketchCanvas";
@@ -977,26 +978,30 @@ const App: React.FC = () => {
     depth: number,
     operation: "NEW" | "CUT",
     throughAll: boolean,
-    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH" | "LOFT",
+    featureType: "EXTRUDE" | "REVOLVE" | "SKETCH" | "LOFT" | "FILLET",
     revolveAngle?: number,
     revolveAxisId?: string,
-    loftSketchIds?: string[]
+    loftSketchIds?: string[],
+    filletRadius?: number,
+    filletType?: "fillet" | "chamfer",
+    edgeFilter?: EdgeFilterType
   ) => {
     const now = Date.now();
     const existingFeature = editingFeatureId ? features.find((f) => f.id === editingFeatureId) : null;
     
+    const getFeatureName = () => {
+      if (featureType === "FILLET") return filletType === "chamfer" ? "Chamfer" : "Fillet";
+      if (featureType === "SKETCH") return "Sketch";
+      if (featureType === "REVOLVE") return "Revolve";
+      if (featureType === "LOFT") return "Loft";
+      return operation === "CUT" ? "Cut" : "Extrude";
+    };
+
     const newFeature: Feature = {
       id: editingFeatureId || `f_${now}`,
       name: editingFeatureId
-        ? existingFeature?.name ||
-          (operation === "CUT"
-            ? "Cut"
-            : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude")
-        : `${
-            operation === "CUT"
-              ? "Cut"
-              : featureType === "SKETCH" ? "Sketch" : featureType === "REVOLVE" ? "Revolve" : featureType === "LOFT" ? "Loft" : "Extrude"
-          } ${features.length + 1}`,
+        ? existingFeature?.name || getFeatureName()
+        : `${getFeatureName()} ${features.length + 1}`,
       sketch: { ...state, extrusionDepth: depth },
       extrusionDepth: depth,
       operation: operation,
@@ -1005,6 +1010,9 @@ const App: React.FC = () => {
       revolveAngle: revolveAngle,
       revolveAxisId: revolveAxisId,
       loftSketchIds: loftSketchIds,
+      filletRadius: filletRadius,
+      filletType: filletType,
+      edgeFilter: edgeFilter,
       transform: currentTransform || [
         1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
       ],

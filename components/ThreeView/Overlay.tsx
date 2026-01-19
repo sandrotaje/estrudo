@@ -1,11 +1,11 @@
 import React from "react";
-import { Feature, Line } from "../../types";
+import { Feature, Line, EdgeFilterType } from "../../types";
 
 type ThreeViewOverlayProps = {
   hasActiveSketch: boolean;
   isConfigOpen: boolean;
   selectedSketchElements: string[];
-  featureType: "EXTRUDE" | "REVOLVE" | "LOFT";
+  featureType: "EXTRUDE" | "REVOLVE" | "LOFT" | "FILLET";
   operation: "NEW" | "CUT";
   throughAll: boolean;
   localDepth: number;
@@ -22,6 +22,13 @@ type ThreeViewOverlayProps = {
   availableSketches: Feature[];
   selectedLoftSketchIds: string[];
   onToggleLoftSketch: (sketchId: string) => void;
+  // Fillet props
+  filletRadius: number;
+  filletType: "fillet" | "chamfer";
+  edgeFilter: EdgeFilterType;
+  onSetFilletRadius: (value: number) => void;
+  onSetFilletType: (value: "fillet" | "chamfer") => void;
+  onSetEdgeFilter: (value: EdgeFilterType) => void;
   // Shell props
   isShellConfigOpen: boolean;
   shellThickness: number;
@@ -31,7 +38,7 @@ type ThreeViewOverlayProps = {
   // Callbacks
   onFitView: () => void;
   onExportSTL: () => void;
-  onSetFeatureType: (value: "EXTRUDE" | "REVOLVE" | "LOFT") => void;
+  onSetFeatureType: (value: "EXTRUDE" | "REVOLVE" | "LOFT" | "FILLET") => void;
   onSetIsConfigOpen: (value: boolean) => void;
   onSetOperation: (value: "NEW" | "CUT") => void;
   onSetThroughAll: (value: boolean) => void;
@@ -69,6 +76,12 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
   availableSketches,
   selectedLoftSketchIds,
   onToggleLoftSketch,
+  filletRadius,
+  filletType,
+  edgeFilter,
+  onSetFilletRadius,
+  onSetFilletType,
+  onSetEdgeFilter,
   isShellConfigOpen,
   shellThickness,
   onSetIsShellConfigOpen,
@@ -272,6 +285,19 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
               </div>
             </button>
           )}
+          <button
+            onClick={() => {
+              onSetFeatureType("FILLET");
+              onSetIsConfigOpen(true);
+            }}
+            className="flex items-center gap-3 px-4 py-3 bg-pink-600 hover:bg-pink-500 text-white rounded-xl shadow-lg transition-all"
+          >
+            <span className="text-xl">◠</span>
+            <div className="flex flex-col text-left">
+              <span className="text-xs font-bold uppercase">Fillet/Chamfer</span>
+              <span className="text-[9px] opacity-80">Round or bevel edges</span>
+            </div>
+          </button>
         </div>
       )}
       {/* Config Panel (Extrude/Revolve/Loft) */}
@@ -295,38 +321,47 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
           </div>
 
           {/* Feature Type Toggle */}
-          <div className="flex bg-[#000] p-1 rounded-lg mb-2">
-            <button
-              onClick={() => onSetFeatureType("EXTRUDE")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                featureType === "EXTRUDE"
-                  ? "bg-purple-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Extrude
-            </button>
-            <button
-              onClick={() => onSetFeatureType("REVOLVE")}
-              className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                featureType === "REVOLVE"
-                  ? "bg-orange-600 text-white"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Revolve
-            </button>
-            {canLoft && (
-              <button
-                onClick={() => onSetFeatureType("LOFT")}
-                className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
-                  featureType === "LOFT"
-                    ? "bg-teal-600 text-white"
-                    : "text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                Loft
-              </button>
+          <div className="flex bg-[#000] p-1 rounded-lg mb-2 flex-wrap gap-1">
+            {featureType !== "FILLET" && (
+              <>
+                <button
+                  onClick={() => onSetFeatureType("EXTRUDE")}
+                  className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                    featureType === "EXTRUDE"
+                      ? "bg-purple-600 text-white"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  Extrude
+                </button>
+                <button
+                  onClick={() => onSetFeatureType("REVOLVE")}
+                  className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                    featureType === "REVOLVE"
+                      ? "bg-orange-600 text-white"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  Revolve
+                </button>
+                {canLoft && (
+                  <button
+                    onClick={() => onSetFeatureType("LOFT")}
+                    className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                      featureType === "LOFT"
+                        ? "bg-teal-600 text-white"
+                        : "text-gray-500 hover:text-gray-300"
+                    }`}
+                  >
+                    Loft
+                  </button>
+                )}
+              </>
+            )}
+            {featureType === "FILLET" && (
+              <div className="w-full py-1.5 text-[10px] font-bold uppercase text-center text-pink-400">
+                Fillet / Chamfer
+              </div>
             )}
           </div>
 
@@ -509,7 +544,92 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             </div>
           )}
 
-          {initialFeatureParams && featureType !== "LOFT" && (
+          {featureType === "FILLET" && (
+            <>
+              {/* Fillet Type Toggle */}
+              <div className="flex bg-[#000] p-1 rounded-lg">
+                <button
+                  onClick={() => onSetFilletType("fillet")}
+                  className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                    filletType === "fillet"
+                      ? "bg-pink-600 text-white"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  Fillet (Round)
+                </button>
+                <button
+                  onClick={() => onSetFilletType("chamfer")}
+                  className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-colors ${
+                    filletType === "chamfer"
+                      ? "bg-pink-600 text-white"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  Chamfer (Bevel)
+                </button>
+              </div>
+
+              {/* Radius Input */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  {filletType === "fillet" ? "Radius" : "Distance"} (mm)
+                </label>
+                <div className="flex items-center gap-3">
+                  <div className="relative flex-1">
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="100"
+                      step="0.5"
+                      value={filletRadius}
+                      onChange={(e) => onSetFilletRadius(parseFloat(e.target.value) || 1)}
+                      className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-sm font-mono text-pink-400 focus:outline-none focus:border-pink-500"
+                    />
+                    <span className="absolute right-3 top-2 text-xs text-gray-600 pointer-events-none">
+                      mm
+                    </span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="50"
+                  step="0.5"
+                  value={filletRadius}
+                  onChange={(e) => onSetFilletRadius(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              {/* Edge Filter Selection */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  Apply to Edges
+                </label>
+                <select
+                  value={edgeFilter}
+                  onChange={(e) => onSetEdgeFilter(e.target.value as EdgeFilterType)}
+                  className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 px-3 text-xs text-gray-300 focus:outline-none focus:border-pink-500"
+                >
+                  <option value="ALL">All Edges</option>
+                  <option value="PARALLEL_XY">Parallel to XY Plane (Horizontal)</option>
+                  <option value="PARALLEL_XZ">Parallel to XZ Plane</option>
+                  <option value="PARALLEL_YZ">Parallel to YZ Plane</option>
+                  <option value="VERTICAL">Vertical Edges (Z direction)</option>
+                  <option value="HORIZONTAL">Horizontal Edges (perpendicular to Z)</option>
+                </select>
+              </div>
+
+              <p className="text-[10px] text-gray-500">
+                {filletType === "fillet"
+                  ? "Creates smooth rounded edges"
+                  : "Creates flat angled edges (bevel)"}
+              </p>
+            </>
+          )}
+
+          {initialFeatureParams && featureType !== "LOFT" && featureType !== "FILLET" && (
             <div className="pt-2 border-t border-white/5">
               <button
                 onClick={onEditSketch}
@@ -541,11 +661,15 @@ const ThreeViewOverlay: React.FC<ThreeViewOverlayProps> = ({
             </button>
             <button
               onClick={onCommit}
-              disabled={!!errorMsg || isGeneratingPreview || (featureType === "LOFT" && selectedLoftSketchIds.length < 2)}
+              disabled={!!errorMsg || isGeneratingPreview || (featureType === "LOFT" && selectedLoftSketchIds.length < 2) || (featureType === "FILLET" && !hasFeatures)}
               className={`flex-1 py-2 rounded-lg text-xs font-bold text-white uppercase shadow-lg ${
-                errorMsg || isGeneratingPreview || (featureType === "LOFT" && selectedLoftSketchIds.length < 2)
+                errorMsg || isGeneratingPreview || (featureType === "LOFT" && selectedLoftSketchIds.length < 2) || (featureType === "FILLET" && !hasFeatures)
                   ? "bg-gray-700"
-                  : featureType === "LOFT" ? "bg-teal-600 hover:bg-teal-500" : "bg-blue-600 hover:bg-blue-500"
+                  : featureType === "LOFT"
+                    ? "bg-teal-600 hover:bg-teal-500"
+                    : featureType === "FILLET"
+                      ? "bg-pink-600 hover:bg-pink-500"
+                      : "bg-blue-600 hover:bg-blue-500"
               }`}
             >
               OK
